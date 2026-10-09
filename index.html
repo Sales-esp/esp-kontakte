@@ -368,7 +368,12 @@ function odPfad(...teile){
 const odWurzel = (...teile) => '/me/drive/root:/' + odPfad(od.ordner, ...teile);
 
 async function odEintrag(...teile){
-  return odGraph(odWurzel(...teile) + '?$select=id,name,size,eTag,lastModifiedDateTime,@microsoft.graph.downloadUrl');
+  // Bewusst ohne $select. OneDrive for Business liefert die Herunterladeadresse
+  // @microsoft.graph.downloadUrl nur in der vollen Antwort mit. Fordert man die
+  // Felder einzeln an, fehlt sie, auch wenn man sie ausdruecklich aufzaehlt, und
+  // das Laden scheitert mit "kein_inhalt". Die volle Antwort ist ein paar hundert
+  // Byte groesser, das faellt nicht ins Gewicht.
+  return odGraph(odWurzel(...teile));
 }
 async function odInhalt(eintrag){
   const u = eintrag['@microsoft.graph.downloadUrl'];
