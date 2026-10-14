@@ -958,6 +958,14 @@ async function odLadenKlick(still){
     render(); toast(n + ' Kontakte aus OneDrive geladen');
   } catch(e){
     toast(odKlartext(e));
+    // Haben sich die angeforderten Rechte erweitert, traegt das gespeicherte
+    // Erneuerungsmerkmal sie nicht und Microsoft weist es ab. Dann muss die
+    // Anmeldung einmal neu gemacht werden, und das soll man auch sehen.
+    if (e && e.code === 'nicht_angemeldet'){
+      odStandZeigen();
+      const b = $('#odBlock');
+      if (b && b.style.display === 'none') odEinstellungenZeigen();
+    }
   }
   WEB.laeuft = false; statusZeile();
 }
