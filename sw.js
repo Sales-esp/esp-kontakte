@@ -88,9 +88,16 @@ self.addEventListener('fetch', ev => {
     return;
   }
 
+  // Beim Seitenaufruf wird bewusst beim Server nachgefragt. GitHub Pages setzt
+  // eine Haltbarkeit von Minuten, und ohne diese Nachfrage sieht man eine neue
+  // Fassung erst, wenn der Zwischenspeicher des Browsers von selbst ablaeuft.
+  const anfrage = ev.request.mode === 'navigate'
+    ? new Request(ev.request.url, {cache: 'no-cache', credentials: 'same-origin'})
+    : ev.request;
+
   ev.respondWith((async () => {
     try {
-      const frisch = await fetch(ev.request);
+      const frisch = await fetch(anfrage);
       if (frisch && frisch.ok){
         const lager = await caches.open(LAGER);
         lager.put(ev.request, frisch.clone()).catch(() => {});
