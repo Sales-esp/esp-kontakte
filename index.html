@@ -328,6 +328,10 @@
         <div class="trenn"></div>
         <button class="btn breit" id="btnCsv" onclick="csvKnopf()">Als CSV exportieren</button>
         <button class="btn green breit" onclick="dokumentDialog()">Dokument erstellen</button>
+        <div class="trenn"></div>
+        <button class="btn breit" onclick="auftragDialog()"
+          title="Einen Auftrag für die markierten Kontakte in OneDrive ablegen">Auftrag an Claude</button>
+        <button class="btn ghost breit" onclick="auftraegeZeigen()">Aufträge ansehen</button>
       </div>
     </div>
   </aside>
@@ -809,6 +813,14 @@ async function odAusD(erzwingen){
   webStandSichern();
   try { localStorage.setItem(LS, JSON.stringify(D)); } catch(err){}
   return D.kontakte.length;
+}
+
+// ---------------------------------------------------------------------- Ordner
+// Listet die Dateien eines Unterordners. Fehlt der Ordner, wirft Graph 404,
+// das faengt der Aufrufer ab und zeigt eine leere Liste.
+async function odKinder(...teile){
+  const d = await odGraph(odWurzel(...teile) + ':/children?$top=200');
+  return (d && d.value) || [];
 }
 
 // ---------------------------------------------------------------------- Bilder
@@ -2303,6 +2315,12 @@ function detailKontakt(k){
       ${ta('Allgemeine Bemerkungen','kontakt',k.id,'kommentar',k.kommentar,90)}
     </fieldset>
 
+    <fieldset><legend>Auftrag an Claude</legend>
+      <button class="btn small" onclick="auftragDialog('${k.id}')">+ Auftrag für diese Person</button>
+      <p class="hint">Zum Beispiel eine Dankesmail. Der Auftrag wird in OneDrive abgelegt,
+        Claude schreibt den Entwurf. Verschickt wird nichts.</p>
+    </fieldset>
+
     <fieldset><legend>Meetings und Protokolle</legend>
       <button class="btn green small" onclick="neuesMeeting('kontakt','${k.id}')">+ Protokoll für diese Person</button>
       ${ms.length?`<table class="mini" style="margin-top:9px"><tr><th>Datum</th><th>Titel</th><th>Art</th><th>Offen</th></tr>
@@ -2597,6 +2615,269 @@ function markeSetzen(){
              kopfEdi:MARKE.edi,   rkEdi:MARKE.edi,
              kopfPauli:MARKE.biber, rkPauli:MARKE.biber};
   Object.keys(z).forEach(id => { const e = document.getElementById(id); if (e) e.src = z[id]; });
+}
+
+// ===================================================================== Auftraege
+// Ein Feld, in das Patrick einen Auftrag an Claude tippt, zum Beispiel eine
+// Dankesmail an markierte Kontakte.
+//
+// Die Seite selbst kann Claude nicht anrufen, dafuer braeuchte es einen
+// API-Schluessel. Darum legt sie den Auftrag als Datei in OneDrive ab:
+//   Auftraege/auftrag_<Zeitstempel>.json
+// Claude holt ihn von dort, schreibt die Entwuerfe nach Auftraege/Entwuerfe
+// und legt den erledigten Auftrag mit dem Ergebnis nach Auftraege/Erledigt.
+
+const AUF_ORDNER = 'Auftraege';
+const LS_AUF = 'esp_kontakte_auftrag';
+
+const AUF_VORLAGEN = [
+  ['dank', 'Dankesmail nach dem Treffen',
+   'Schreibe eine kurze, persoenliche Dankesmail fuer das Gespraech. '
+   + 'Nimm Bezug auf das, was im Protokoll steht, bleib konkret und ohne Verkaufsdruck. '
+   + 'Am Schluss ein offener naechster Schritt.'],
+  ['nachfassen', 'Nachfassen',
+   'Schreibe eine hoefliche Mail, die nachfasst: woran wir zuletzt waren und was der '
+   + 'naechste Schritt waere. Kurz halten.'],
+  ['unterlagen', 'Unterlagen nachsenden',
+   'Schreibe eine kurze Mail, die die besprochenen Unterlagen ankuendigt und fragt, '
+   + 'ob noch etwas fehlt.'],
+  ['einladung', 'Einladung',
+   'Schreibe eine Einladung. Anlass und Termin ergaenze ich unten im Text.'],
+  ['frei', 'Frei formulieren', '']
+];
+
+// Merkt sich die zuletzt getroffene Wahl, nicht den Text
+function aufHolen(){
+  try { return JSON.parse(localStorage.getItem(LS_AUF) || 'null') || {}; }
+  catch(e){ return {}; }
+}
+function aufMerken(o){
+  try { localStorage.setItem(LS_AUF, JSON.stringify(o)); } catch(e){}
+}
+
+function aufKontaktdaten(k){
+  const fa = (typeof firmaVon === 'function') ? firmaVon(k) : null;
+  return {id: k.id,
+          name: nameVon(k) || '',
+          funktion: k.funktion || '',
+          firma: k.firma || (fa ? fa.name : ''),
+          mail: k.mail || '',
+          land: k.land || '',
+          quelle: k.quelle || '',
+          kennengelerntAm: k.kennengelerntAm || ''};
+}
+
+// --------------------------------------------------------------------- Dialog
+function auftragDialog(einzelId){
+  if (!odAngemeldet()){
+    odEinstellungenZeigen();
+    toast('Bitte zuerst bei OneDrive anmelden');
+    return;
+  }
+  const ziel = einzelId ? [kontaktVon(einzelId)].filter(Boolean) : auswahlKontakte();
+  if (!ziel.length){ toast('Bitte zuerst Kontakte markieren'); return; }
+
+  const ohneMail = ziel.filter(k => !(k.mail || '').trim()).length;
+  const alt = document.getElementById('aufDialog'); if (alt) alt.remove();
+  const m = aufHolen();
+
+  const namen = ziel.slice(0, 12).map(k => nameVon(k) || k.id);
+  const rest = ziel.length - namen.length;
+
+  const d = document.createElement('div');
+  d.id = 'aufDialog'; d.className = 'modal';
+  d.innerHTML = `<div class="modalbox">
+    <h3>Auftrag an Claude</h3>
+    <p class="hint">${ziel.length} ${ziel.length === 1 ? 'Kontakt' : 'Kontakte'}:
+      ${namen.map(n => `<span class="chip">${esc(n)}</span>`).join('')}
+      ${rest > 0 ? `<span class="chip">und ${rest} weitere</span>` : ''}</p>
+    ${ohneMail ? `<p class="hint" style="color:#b45309">${ohneMail} davon ${ohneMail === 1
+        ? 'hat' : 'haben'} keine Mailadresse. Der Entwurf entsteht trotzdem, nur ohne
+        Empfaenger.</p>` : ''}
+
+    <div class="fld"><label for="aufVorlage">Vorlage</label>
+      <select id="aufVorlage" onchange="aufVorlageUm()">
+        ${AUF_VORLAGEN.map(([k, l]) =>
+          `<option value="${k}" ${m.vorlage === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+      </select></div>
+
+    <div class="fld"><label for="aufText">Auftrag</label>
+      <textarea id="aufText" rows="5"
+        placeholder="Was soll Claude tun?"></textarea></div>
+
+    <div class="fld"><label for="aufSprache">Sprache</label>
+      <select id="aufSprache">
+        <option value="auto" ${m.sprache === 'auto' || !m.sprache ? 'selected' : ''}>nach Land der Person</option>
+        <option value="de" ${m.sprache === 'de' ? 'selected' : ''}>Deutsch</option>
+        <option value="en" ${m.sprache === 'en' ? 'selected' : ''}>Englisch</option>
+      </select></div>
+
+    <label class="hint"><input type="checkbox" id="aufProt" ${m.prot === false ? '' : 'checked'}>
+      Entwurf als Protokolleintrag beim Kontakt ablegen</label>
+    <label class="hint"><input type="checkbox" id="aufEml" ${m.eml === false ? '' : 'checked'}>
+      Outlook-Entwurf (.eml) in OneDrive ablegen</label>
+    <p class="hint">Verschickt wird nichts. Die Entwuerfe liegen danach in
+      <code>${esc(od.ordner)}/${AUF_ORDNER}/Entwuerfe</code>.</p>
+
+    <div class="knopfe" style="margin-top:12px">
+      <button class="btn" id="aufAb" onclick="auftragAblegen()">Auftrag ablegen</button>
+      <button class="btn ghost" onclick="document.getElementById('aufDialog').remove()">Abbrechen</button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+  d.dataset.ids = ziel.map(k => k.id).join(',');
+  aufVorlageUm();
+  const t = document.getElementById('aufText');
+  if (t){ t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+}
+
+function aufVorlageUm(){
+  const s = document.getElementById('aufVorlage');
+  const t = document.getElementById('aufText');
+  if (!s || !t) return;
+  const v = AUF_VORLAGEN.find(x => x[0] === s.value);
+  // Nur ersetzen, solange der Text noch unveraendert aus einer Vorlage stammt
+  const warVorlage = AUF_VORLAGEN.some(x => x[2] && x[2] === t.value) || !t.value.trim();
+  if (v && warVorlage) t.value = v[2];
+}
+
+// --------------------------------------------------------------------- Ablegen
+async function auftragAblegen(){
+  const d = document.getElementById('aufDialog'); if (!d) return;
+  const text = (document.getElementById('aufText').value || '').trim();
+  if (!text){ toast('Bitte den Auftrag eintragen'); return; }
+
+  const ids = (d.dataset.ids || '').split(',').filter(Boolean);
+  const kontakte = ids.map(kontaktVon).filter(Boolean).map(aufKontaktdaten);
+  if (!kontakte.length){ toast('Keine Kontakte mehr vorhanden'); return; }
+
+  const vorlage = document.getElementById('aufVorlage').value;
+  const sprache = document.getElementById('aufSprache').value;
+  const prot = document.getElementById('aufProt').checked;
+  const eml = document.getElementById('aufEml').checked;
+  if (!prot && !eml){ toast('Bitte mindestens eine Ablage für das Ergebnis wählen'); return; }
+  aufMerken({vorlage, sprache, prot, eml});
+
+  const ergebnis = [];
+  if (prot) ergebnis.push('protokoll');
+  if (eml) ergebnis.push('eml');
+
+  // Der Zeitstempel geht nur auf die Sekunde. Zwei Auftraege kurz nacheinander
+  // haetten denselben Namen und der zweite wuerde den ersten ueberschreiben,
+  // darum kommen drei zufaellige Zeichen dazu.
+  const stempel = webStempel() + '_' + Math.random().toString(36).slice(2, 5);
+  const datei = 'auftrag_' + stempel + '.json';
+  const inhalt = {
+    version: 1,
+    id: 'A_' + stempel,
+    stand: 'offen',
+    erstelltAm: new Date().toISOString(),
+    erstelltVon: od.konto || '',
+    quelle: 'esp Kontakte, Web-Fassung',
+    auftrag: text,
+    vorlage: vorlage,
+    sprache: sprache,
+    ergebnis: ergebnis,
+    anzahl: kontakte.length,
+    kontakte: kontakte,
+    format: 'Auftrag aus der Kontakte-App. Die Kontaktdaten unten sind nur ein Auszug, '
+          + 'massgebend ist kontakte.json im selben Ordner.'
+  };
+
+  const knopf = document.getElementById('aufAb');
+  if (knopf){ knopf.disabled = true; knopf.textContent = 'wird abgelegt...'; }
+  try {
+    await odSchreiben(new Blob([JSON.stringify(inhalt, null, 1)], {type: 'application/json'}),
+                      'application/json', AUF_ORDNER, datei);
+    d.remove();
+    toast('Auftrag abgelegt: ' + datei);
+    auftragFertigHinweis(datei, kontakte.length);
+  } catch(e){
+    if (knopf){ knopf.disabled = false; knopf.textContent = 'Auftrag ablegen'; }
+    toast(odKlartext(e));
+  }
+}
+
+function auftragFertigHinweis(datei, n){
+  const alt = document.getElementById('aufFertig'); if (alt) alt.remove();
+  const d = document.createElement('div');
+  d.id = 'aufFertig'; d.className = 'modal';
+  d.innerHTML = `<div class="modalbox">
+    <h3>Auftrag liegt bereit</h3>
+    <p class="hint">${n} ${n === 1 ? 'Kontakt' : 'Kontakte'}, abgelegt als
+      <code>${esc(AUF_ORDNER)}/${esc(datei)}</code>.</p>
+    <p class="hint">Claude schaut jeden Morgen um 10 Uhr nach. Wenn es schneller gehen soll,
+      sag ihm im Chat:</p>
+    <p><code id="aufSatz">führe meine Aufträge aus</code></p>
+    <div class="knopfe" style="margin-top:12px">
+      <button class="btn" onclick="aufSatzKopieren()">Satz kopieren</button>
+      <button class="btn ghost" onclick="document.getElementById('aufFertig').remove()">Schliessen</button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+}
+function aufSatzKopieren(){
+  const t = (document.getElementById('aufSatz') || {}).textContent || '';
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(
+    () => toast('kopiert'), () => toast('Kopieren ging nicht'));
+}
+
+// --------------------------------------------------------------------- Ansehen
+async function auftraegeZeigen(){
+  if (!odAngemeldet()){ odEinstellungenZeigen(); toast('Bitte zuerst anmelden'); return; }
+  const alt = document.getElementById('aufListe'); if (alt) alt.remove();
+  const d = document.createElement('div');
+  d.id = 'aufListe'; d.className = 'modal';
+  d.innerHTML = `<div class="modalbox"><h3>Aufträge</h3>
+    <p class="hint" id="aufLadeHinweis">wird geladen...</p></div>`;
+  document.body.appendChild(d);
+
+  let offen = [], erledigt = [];
+  try {
+    offen = (await odKinder(AUF_ORDNER))
+      .filter(x => x.file && /^auftrag_.*\.json$/i.test(x.name))
+      .sort((a, b) => b.name.localeCompare(a.name));
+  } catch(e){ /* Ordner gibt es noch nicht */ }
+  try {
+    erledigt = (await odKinder(AUF_ORDNER, 'Erledigt'))
+      .filter(x => x.file && /\.json$/i.test(x.name))
+      .sort((a, b) => b.name.localeCompare(a.name)).slice(0, 10);
+  } catch(e){}
+
+  const inhalte = [];
+  for (const f of offen.slice(0, 15)){
+    try {
+      const e = await odEintrag(AUF_ORDNER, f.name);
+      inhalte.push({datei: f.name, j: await (await odInhalt(e)).json()});
+    } catch(err){ inhalte.push({datei: f.name, j: null}); }
+  }
+
+  const box = d.querySelector('.modalbox');
+  box.innerHTML = `<h3>Aufträge</h3>
+    ${inhalte.length ? inhalte.map(x => `
+      <div style="border:1px solid var(--line);border-radius:7px;padding:9px 10px;margin-bottom:8px">
+        <div style="font-size:12px;color:#6b7280">${esc(x.datei)}</div>
+        <div style="margin:3px 0">${x.j ? esc(x.j.auftrag || '') : '(nicht lesbar)'}</div>
+        <div class="hint">${x.j ? (x.j.anzahl || (x.j.kontakte || []).length) + ' Kontakte' : ''}
+          <button class="btn ghost small" style="float:right"
+            onclick="auftragWeg('${esc(x.datei)}')">löschen</button></div>
+      </div>`).join('')
+      : '<p class="hint">Kein offener Auftrag.</p>'}
+    ${offen.length > 15 ? `<p class="hint">und ${offen.length - 15} weitere</p>` : ''}
+    <p class="hint" style="margin-top:10px">Erledigt: ${erledigt.length
+      ? erledigt.map(f => esc(f.name)).join('<br>') : 'noch nichts'}</p>
+    <div class="knopfe" style="margin-top:12px">
+      <button class="btn ghost" onclick="document.getElementById('aufListe').remove()">Schliessen</button>
+    </div>`;
+}
+
+async function auftragWeg(datei){
+  if (!confirm('Auftrag ' + datei + ' löschen?')) return;
+  try {
+    await odGraph(odWurzel(AUF_ORDNER, datei), {method: 'DELETE'});
+    toast('gelöscht');
+    auftraegeZeigen();
+  } catch(e){ toast(odKlartext(e)); }
 }
 
 // ----------------------------------------------------------------- Start
