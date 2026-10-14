@@ -366,12 +366,16 @@
 const OD_KONF = 'esp_od_konfig';
 const OD_SITZ = 'esp_od_sitzung';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
-// Mail.Read und Contacts.Read brauchen nur die Funktion "Postfach abgleichen".
-// Beide sind Rechte, die der Benutzer selbst erteilen darf, ohne Administrator.
-// Wer eine aeltere Anmeldung im Geraet hat, muss sich einmal neu anmelden:
-// das gespeicherte Erneuerungsmerkmal deckt die neuen Rechte nicht ab.
-const OD_BEREICH = 'openid profile offline_access User.Read Files.ReadWrite '
-                 + 'Mail.Read Contacts.Read';
+// Die Grundrechte. Nur diese werden bei der normalen Anmeldung verlangt.
+const OD_BEREICH = 'openid profile offline_access User.Read Files.ReadWrite';
+
+// Zusaetzliche Rechte fuer "Postfach abgleichen". Sie werden bewusst NICHT in
+// die normale Anmeldung gemischt: der Mandant esp-engineering verlangt dafuer
+// eine Administratorgenehmigung, und wer sie nicht bekommt, haette sonst gar
+// keine Anmeldung mehr, auch nicht fuer OneDrive. Darum werden sie nur dann
+// angefragt, wenn jemand den Abgleich wirklich benutzen will.
+const OD_BEREICH_POST = OD_BEREICH + ' Mail.Read Contacts.Read';
+const OD_BER_SITZ = 'esp_od_bereich';
 
 const od = {
   clientId: '', mandant: 'organizations', ordner: '04.Reisen/Kontakte',
@@ -427,14 +431,17 @@ async function odPruefwert(text){
 }
 const odBasis = () => 'https://login.microsoftonline.com/' + encodeURIComponent(od.mandant || 'organizations');
 
-async function odAnmelden(){
+// bereich leer lassen heisst: nur die Grundrechte
+async function odAnmelden(bereich){
   if (!od.clientId) throw {code:'keine_id'};
+  const b = bereich || OD_BEREICH;
   const pruefer = odZufall(48), zustand = odZufall(12);
   sessionStorage.setItem('esp_od_pruefer', pruefer);
   sessionStorage.setItem('esp_od_zustand', zustand);
+  sessionStorage.setItem(OD_BER_SITZ, b);
   const p = new URLSearchParams({
     client_id: od.clientId, response_type: 'code', redirect_uri: odUmleitung(),
-    response_mode: 'query', scope: OD_BEREICH, state: zustand,
+    response_mode: 'query', scope: b, state: zustand,
     code_challenge: await odPruefwert(pruefer), code_challenge_method: 'S256'});
   location.href = odBasis() + '/oauth2/v2.0/authorize?' + p.toString();
 }
@@ -449,16 +456,20 @@ async function odRueckkehr(){
   if (p.get('state') !== sessionStorage.getItem('esp_od_zustand'))
     return {fehler:'Die Antwort passt nicht zur Anfrage. Bitte nochmals anmelden.'};
   const pruefer = sessionStorage.getItem('esp_od_pruefer') || '';
+  // Der Tausch muss denselben Umfang nennen wie die Anmeldung davor
+  const bereich = sessionStorage.getItem(OD_BER_SITZ) || OD_BEREICH;
   sessionStorage.removeItem('esp_od_pruefer'); sessionStorage.removeItem('esp_od_zustand');
+  sessionStorage.removeItem(OD_BER_SITZ);
   try {
     await odTausch({grant_type:'authorization_code', code, code_verifier:pruefer,
-                    redirect_uri:odUmleitung()});
+                    redirect_uri:odUmleitung()}, bereich);
     return {ok:true};
   } catch(e){ return {fehler: odKlartext(e)}; }
 }
 
-async function odTausch(zusatz){
-  const p = new URLSearchParams(Object.assign({client_id:od.clientId, scope:OD_BEREICH}, zusatz));
+async function odTausch(zusatz, bereich){
+  const p = new URLSearchParams(Object.assign(
+    {client_id:od.clientId, scope: bereich || OD_BEREICH}, zusatz));
   const r = await fetch(odBasis() + '/oauth2/v2.0/token', {
     method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body:p.toString()});
   const d = await r.json().catch(() => ({}));
@@ -3121,8 +3132,11 @@ function postfachDialog(){
         <option value="6000" selected>6000, üblich</option>
         <option value="15000">15000, gründlich und langsam</option>
       </select></div>
-    <p class="hint">Beim ersten Mal fragt Microsoft nach der Zustimmung für
-      Postfach und Kontakte. Kommt stattdessen "nicht angemeldet", einmal neu anmelden.</p>
+    <p class="hint">Der Abgleich braucht zusätzlich die Rechte Mail.Read und
+      Contacts.Read. Die normale Anmeldung fragt sie nicht mit an, damit eine
+      verweigerte Zustimmung nie den Zugang zu OneDrive blockiert.</p>
+    <button class="btn ghost breit" onclick="pfRechteHolen()"
+      title="Meldet dich mit den zusätzlichen Rechten neu an">Zugriff aufs Postfach anfragen</button>
     <div class="hinweis" id="pfStand" style="margin-top:6px"></div>
     <div class="knopfe" style="margin-top:12px">
       <button class="btn" id="pfStart" onclick="postfachLesen()">Abgleich starten</button>
@@ -3160,13 +3174,25 @@ async function postfachLesen(){
   }
 }
 
+// Holt die zusaetzlichen Rechte. Verweigert der Mandant sie, bleibt die
+// bestehende Anmeldung fuer OneDrive davon unberuehrt.
+async function pfRechteHolen(){
+  if (!od.clientId){ toast('Bitte zuerst die OneDrive-Angaben eintragen'); return; }
+  if (!confirm('Du wirst zu Microsoft geschickt und meldest dich neu an, diesmal '
+             + 'mit Zugriff auf Postfach und Kontakte.\n\n'
+             + 'Verlangt euer Mandant dafür eine Administratorgenehmigung, brichst du '
+             + 'dort einfach ab. An deiner jetzigen Anmeldung ändert sich dann nichts.')) return;
+  try { await odAnmelden(OD_BEREICH_POST); } catch(e){ toast(odKlartext(e)); }
+}
+
 function pfKlartext(e){
   const c = (e && e.code) || '';
   if (c === 'http_403')
-    return 'Microsoft verweigert den Zugriff auf das Postfach. Bitte einmal abmelden '
-         + 'und neu anmelden, damit die neuen Rechte gelten.';
+    return 'Microsoft verweigert den Zugriff auf das Postfach. Die Rechte Mail.Read '
+         + 'und Contacts.Read fehlen noch: oben "Zugriff aufs Postfach anfragen". '
+         + 'Verlangt euer Mandant dafür einen Administrator, geht es ohne ihn nicht.';
   if (c === 'nicht_angemeldet')
-    return 'Die Anmeldung reicht für das Postfach nicht. Bitte abmelden und neu anmelden.';
+    return 'Die Anmeldung reicht für das Postfach nicht. Bitte oben den Zugriff anfragen.';
   return odKlartext(e);
 }
 
