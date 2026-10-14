@@ -301,6 +301,9 @@
       <button class="btn ghost breit" onclick="odEinstellungenZeigen()">OneDrive</button>
       <button class="btn ghost breit" onclick="dateiSpeichern(false)"
         title="Den Stand zusätzlich als Datei herunterladen">Als Datei sichern</button>
+      <div class="trenn"></div>
+      <button class="btn ghost breit" onclick="postfachDialog()"
+        title="Outlook-Kontakte und Mailpartner mit dem Bestand vergleichen">Postfach abgleichen</button>
     </div>
     <div id="odBlock" style="display:none">
       <div class="rahmenkopf"><img id="rkEdi2" alt=""><b>OneDrive</b></div>
@@ -363,7 +366,12 @@
 const OD_KONF = 'esp_od_konfig';
 const OD_SITZ = 'esp_od_sitzung';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
-const OD_BEREICH = 'openid profile offline_access User.Read Files.ReadWrite';
+// Mail.Read und Contacts.Read brauchen nur die Funktion "Postfach abgleichen".
+// Beide sind Rechte, die der Benutzer selbst erteilen darf, ohne Administrator.
+// Wer eine aeltere Anmeldung im Geraet hat, muss sich einmal neu anmelden:
+// das gespeicherte Erneuerungsmerkmal deckt die neuen Rechte nicht ab.
+const OD_BEREICH = 'openid profile offline_access User.Read Files.ReadWrite '
+                 + 'Mail.Read Contacts.Read';
 
 const od = {
   clientId: '', mandant: 'organizations', ordner: '04.Reisen/Kontakte',
@@ -2878,6 +2886,393 @@ async function auftragWeg(datei){
     toast('gelöscht');
     auftraegeZeigen();
   } catch(e){ toast(odKlartext(e)); }
+}
+
+// ===================================================================== Postfach
+// Vergleicht das Outlook-Postfach mit dem Bestand und zeigt, wer dort vorkommt,
+// aber hier noch fehlt. Zwei Quellen, getrennt ausgewiesen:
+//   1. die gepflegten Outlook-Kontakte (/me/contacts)
+//   2. die Mailpartner der letzten Monate (/me/messages)
+// Gelesen wird nur. Geschrieben wird nichts, bis Patrick eine Person uebernimmt
+// und danach selbst auf Speichern drueckt.
+
+const PF = {laeuft: false, abbruch: false, monate: 24, schritt: '',
+            gelesen: 0, kontakte: [], partner: [], gefiltert: 0, intern: 0};
+
+// Postfaecher, die niemand von Hand pflegt. Geprueft wird der Teil vor dem @.
+const PF_MASCHINE_RE = new RegExp('^(' + [
+  'no-?reply', 'do-?not-?reply', 'donotreply', 'mailer', 'mailer-daemon',
+  'bounces?', 'postmaster', 'newsletter', 'news', 'notifications?', 'notify',
+  'benachrichtigung', 'alerts?', 'automailer', 'automatisch', 'autoreply',
+  'system', 'daemon', 'root', 'webmaster', 'abuse', 'unsubscribe', 'abmelden',
+  'mailing', 'mailinglist', 'list', 'listserv', 'tracking', 'monitoring',
+  'jobs', 'karriere', 'careers?', 'datenschutz', 'privacy', 'invitations?',
+  'calendar-notification', 'meetings?-noreply'
+].join('|') + ')$', 'i');
+
+// Sammeladressen sind keine Personen, koennen aber echte Geschaeftskontakte sein.
+// Sie werden darum nicht weggeworfen, sondern eigens gekennzeichnet.
+const PF_SAMMEL_RE = new RegExp('^(' + [
+  'info', 'office', 'kontakt', 'contact', 'sales', 'vertrieb', 'support',
+  'service', 'hello', 'hallo', 'mail', 'post', 'empfang', 'reception',
+  'buchhaltung', 'accounting', 'rechnung', 'invoice', 'einkauf', 'purchasing',
+  'marketing', 'presse', 'press', 'team', 'anfrage', 'request', 'order',
+  'bestellung'
+].join('|') + ')$', 'i');
+
+function pfEigeneDomain(){
+  const m = (od.konto || '').split('@')[1];
+  return (m || '').toLowerCase();
+}
+
+function pfNameZerlegen(anzeige, adresse){
+  const a = (anzeige || '').trim();
+  if (!a || a.toLowerCase() === (adresse || '').toLowerCase()) return {vorname: '', nachname: ''};
+  if (a.includes(',')){
+    const t = a.split(',');
+    return {nachname: t[0].trim(), vorname: t.slice(1).join(' ').trim()};
+  }
+  const t = a.split(/\s+/);
+  if (t.length === 1) return {vorname: '', nachname: t[0]};
+  return {nachname: t[t.length - 1], vorname: t.slice(0, -1).join(' ')};
+}
+
+// Ein grober Firmenname aus der Domain, nur als Vorschlag
+function pfFirmaAusDomain(d){
+  const teile = (d || '').split('.');
+  const frei = ['gmail','googlemail','outlook','hotmail','live','web','gmx','yahoo',
+                'bluewin','icloud','me','aol','t-online','protonmail','mail'];
+  if (!teile.length || frei.includes(teile[0])) return '';
+  return teile[0].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// --------------------------------------------------------------------- Bestand
+function pfBestand(){
+  const mails = new Set(), namen = new Set();
+  const rein = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/ß/g, 'ss').toLowerCase().replace(/[^a-z0-9]/g, '');
+  D.kontakte.forEach(k => {
+    ['mail', 'mail2'].forEach(f => {
+      const v = (k[f] || '').trim().toLowerCase();
+      if (v.includes('@')) mails.add(v);
+    });
+    const n = rein(k.nachname);
+    if (n) namen.add(n + '|' + rein(k.vorname).slice(0, 1));
+  });
+  return {mails, namen, rein};
+}
+
+function pfSchonDa(b, mail, vorname, nachname){
+  if (mail && b.mails.has(mail.toLowerCase())) return 'Mailadresse';
+  const n = b.rein(nachname);
+  if (n && b.namen.has(n + '|' + b.rein(vorname).slice(0, 1))) return 'Name';
+  return '';
+}
+
+// --------------------------------------------------------------------- Graph
+// Graph gibt die naechste Seite als volle Adresse zurueck. odGraph erwartet nur
+// den Teil dahinter, darum wird der Anfang abgeschnitten.
+async function pfSeiten(pfad, proSeite, grenze){
+  const raus = [];
+  let next = pfad;
+  while (next && raus.length < grenze && !PF.abbruch){
+    const d = await odGraph(next);
+    (d.value || []).forEach(x => raus.push(x));
+    PF.gelesen = raus.length;
+    pfFortschritt();
+    const n = d['@odata.nextLink'];
+    next = (n && n.startsWith(GRAPH)) ? n.slice(GRAPH.length) : '';
+    if (proSeite) proSeite(raus.length);
+  }
+  return raus;
+}
+
+async function pfOutlookKontakte(b){
+  PF.schritt = 'Outlook-Kontakte'; PF.gelesen = 0; pfFortschritt();
+  const felder = 'displayName,givenName,surname,companyName,jobTitle,emailAddresses,'
+               + 'businessPhones,mobilePhone,businessAddress,personalNotes';
+  const roh = await pfSeiten('/me/contacts?$top=100&$select=' + felder, null, 3000);
+  const raus = [];
+  roh.forEach(c => {
+    const mail = ((c.emailAddresses || [])[0] || {}).address || '';
+    const vorname = c.givenName || pfNameZerlegen(c.displayName, mail).vorname;
+    const nachname = c.surname || pfNameZerlegen(c.displayName, mail).nachname;
+    if (!nachname && !mail) return;
+    const da = pfSchonDa(b, mail, vorname, nachname);
+    if (da) return;
+    const adr = c.businessAddress || {};
+    raus.push({quelle: 'outlook', vorname, nachname, mail: mail.toLowerCase(),
+      name: [vorname, nachname].filter(Boolean).join(' ') || c.displayName || mail,
+      firma: c.companyName || pfFirmaAusDomain((mail.split('@')[1] || '')),
+      funktion: c.jobTitle || '',
+      tel: (c.businessPhones || [])[0] || '', mobil: c.mobilePhone || '',
+      strasse: adr.street || '', plz: adr.postalCode || '', ort: adr.city || '',
+      land: adr.countryOrRegion || '',
+      an: 0, von: 0, cc: 0, letzte: '', art: 'person', nehmen: true});
+  });
+  return raus;
+}
+
+async function pfMailpartner(b, monate, grenze){
+  PF.schritt = 'Mails'; PF.gelesen = 0; pfFortschritt();
+  const seit = new Date();
+  seit.setMonth(seit.getMonth() - monate);
+  const pfad = '/me/messages?$top=100'
+    + '&$select=from,toRecipients,ccRecipients,receivedDateTime'
+    + '&$filter=' + encodeURIComponent('receivedDateTime ge ' + seit.toISOString())
+    + '&$orderby=receivedDateTime%20desc';
+  const roh = await pfSeiten(pfad, null, grenze);
+
+  const ich = (od.konto || '').toLowerCase();
+  const eigen = pfEigeneDomain();
+  const karte = new Map();
+  const merke = (ea, feld, datum) => {
+    const adresse = ((ea || {}).address || '').trim().toLowerCase();
+    if (!adresse || !adresse.includes('@') || adresse === ich) return;
+    let e = karte.get(adresse);
+    if (!e){
+      const n = pfNameZerlegen((ea || {}).name, adresse);
+      e = {quelle: 'mail', mail: adresse, vorname: n.vorname, nachname: n.nachname,
+           name: [n.vorname, n.nachname].filter(Boolean).join(' ') || adresse,
+           firma: pfFirmaAusDomain(adresse.split('@')[1]), funktion: '',
+           tel: '', mobil: '', strasse: '', plz: '', ort: '', land: '',
+           an: 0, von: 0, cc: 0, letzte: '', nehmen: false};
+      karte.set(adresse, e);
+    }
+    e[feld]++;
+    if (datum > e.letzte) e.letzte = datum;
+    // Ein spaeter gefundener echter Name ist besser als gar keiner
+    if (!e.nachname){
+      const n = pfNameZerlegen((ea || {}).name, adresse);
+      if (n.nachname){ e.vorname = n.vorname; e.nachname = n.nachname;
+                       e.name = [n.vorname, n.nachname].filter(Boolean).join(' '); }
+    }
+  };
+
+  roh.forEach(m => {
+    const datum = (m.receivedDateTime || '').slice(0, 10);
+    const vonMir = (((m.from || {}).emailAddress || {}).address || '').toLowerCase() === ich;
+    if (vonMir){
+      (m.toRecipients || []).forEach(r => merke(r.emailAddress, 'an', datum));
+      (m.ccRecipients || []).forEach(r => merke(r.emailAddress, 'cc', datum));
+    } else {
+      merke((m.from || {}).emailAddress, 'von', datum);
+      (m.ccRecipients || []).forEach(r => merke(r.emailAddress, 'cc', datum));
+    }
+  });
+
+  PF.gefiltert = 0; PF.intern = 0;
+  const raus = [];
+  karte.forEach(e => {
+    const teil = e.mail.split('@');
+    const lokal = teil[0], domain = teil[1] || '';
+    if (eigen && domain === eigen){ PF.intern++; return; }
+    if (PF_MASCHINE_RE.test(lokal)){ PF.gefiltert++; return; }
+    if (pfSchonDa(b, e.mail, e.vorname, e.nachname)) return;
+    e.art = PF_SAMMEL_RE.test(lokal) ? 'sammel' : 'person';
+    e.punkte = e.an * 3 + e.von * 2 + e.cc * 0.2;
+    // Vorausgewaehlt ist, wem Patrick selbst geschrieben hat: das staerkste Zeichen
+    e.nehmen = e.an > 0 && e.art === 'person';
+    raus.push(e);
+  });
+  raus.sort((a, b2) => b2.punkte - a.punkte || (b2.letzte || '').localeCompare(a.letzte || ''));
+  return raus;
+}
+
+// --------------------------------------------------------------------- Ablauf
+function pfFortschritt(){
+  const e = document.getElementById('pfStand');
+  if (e) e.textContent = PF.laeuft
+    ? PF.schritt + ': ' + PF.gelesen + ' gelesen' + (PF.abbruch ? ', wird beendet' : '')
+    : '';
+}
+
+function postfachDialog(){
+  if (!odAngemeldet()){
+    odEinstellungenZeigen();
+    toast('Bitte zuerst bei OneDrive anmelden');
+    return;
+  }
+  if (!D.kontakte.length){ toast('Erst den Bestand laden, sonst ist der Abgleich sinnlos'); return; }
+  const alt = document.getElementById('pfDialog'); if (alt) alt.remove();
+  const d = document.createElement('div');
+  d.id = 'pfDialog'; d.className = 'modal';
+  d.innerHTML = `<div class="modalbox">
+    <h3>Postfach abgleichen</h3>
+    <p class="hint">Liest die Outlook-Kontakte und die Mailpartner und zeigt, wer dort
+      vorkommt, hier aber fehlt. Es wird nur gelesen.</p>
+    <div class="fld"><label for="pfMonate">Zeitraum der Mails</label>
+      <select id="pfMonate">
+        <option value="12">letzte 12 Monate</option>
+        <option value="24" selected>letzte 24 Monate</option>
+        <option value="36">letzte 36 Monate</option>
+      </select></div>
+    <div class="fld"><label for="pfGrenze">Höchstens so viele Mails lesen</label>
+      <select id="pfGrenze">
+        <option value="2000">2000, schnell</option>
+        <option value="6000" selected>6000, üblich</option>
+        <option value="15000">15000, gründlich und langsam</option>
+      </select></div>
+    <p class="hint">Beim ersten Mal fragt Microsoft nach der Zustimmung für
+      Postfach und Kontakte. Kommt stattdessen "nicht angemeldet", einmal neu anmelden.</p>
+    <div class="hinweis" id="pfStand" style="margin-top:6px"></div>
+    <div class="knopfe" style="margin-top:12px">
+      <button class="btn" id="pfStart" onclick="postfachLesen()">Abgleich starten</button>
+      <button class="btn ghost" onclick="pfAbbrechen()">Abbrechen</button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+}
+
+function pfAbbrechen(){
+  if (PF.laeuft){ PF.abbruch = true; pfFortschritt(); return; }
+  const d = document.getElementById('pfDialog'); if (d) d.remove();
+}
+
+async function postfachLesen(){
+  if (PF.laeuft) return;
+  PF.laeuft = true; PF.abbruch = false;
+  const monate = parseInt(document.getElementById('pfMonate').value, 10) || 24;
+  const grenze = parseInt(document.getElementById('pfGrenze').value, 10) || 6000;
+  PF.monate = monate;
+  const k = document.getElementById('pfStart');
+  if (k){ k.disabled = true; k.textContent = 'läuft...'; }
+  try {
+    const b = pfBestand();
+    PF.kontakte = await pfOutlookKontakte(b);
+    PF.partner = await pfMailpartner(b, monate, grenze);
+    PF.laeuft = false;
+    const d = document.getElementById('pfDialog'); if (d) d.remove();
+    pfErgebnisZeigen();
+  } catch(e){
+    PF.laeuft = false;
+    if (k){ k.disabled = false; k.textContent = 'Abgleich starten'; }
+    pfFortschritt();
+    toast(pfKlartext(e));
+  }
+}
+
+function pfKlartext(e){
+  const c = (e && e.code) || '';
+  if (c === 'http_403')
+    return 'Microsoft verweigert den Zugriff auf das Postfach. Bitte einmal abmelden '
+         + 'und neu anmelden, damit die neuen Rechte gelten.';
+  if (c === 'nicht_angemeldet')
+    return 'Die Anmeldung reicht für das Postfach nicht. Bitte abmelden und neu anmelden.';
+  return odKlartext(e);
+}
+
+// --------------------------------------------------------------------- Ergebnis
+function pfZeile(x, i, liste){
+  const z = [];
+  if (x.an) z.push(x.an + 'x geschrieben');
+  if (x.von) z.push(x.von + 'x erhalten');
+  if (x.cc) z.push(x.cc + 'x Kopie');
+  return `<tr>
+    <td><input type="checkbox" ${x.nehmen ? 'checked' : ''}
+        onchange="pfMarkieren('${liste}',${i},this.checked)"></td>
+    <td>${esc(x.name)}${x.art === 'sammel'
+        ? ' <span class="chip">Sammeladresse</span>' : ''}</td>
+    <td>${esc(x.mail)}</td>
+    <td>${esc(x.firma)}</td>
+    <td style="font-size:11.5px;color:var(--muted)">${esc(z.join(', '))}${x.letzte ? '<br>zuletzt ' + esc(x.letzte) : ''}</td>
+  </tr>`;
+}
+
+function pfMarkieren(liste, i, an){ PF[liste][i].nehmen = an; pfZahlZeigen(); }
+function pfAlle(liste, an){
+  PF[liste].forEach(x => { if (an === false || x.art === 'person') x.nehmen = an; });
+  pfErgebnisZeigen();
+}
+function pfZahlZeigen(){
+  const e = document.getElementById('pfZahl');
+  if (e) e.textContent = (PF.kontakte.filter(x => x.nehmen).length
+                        + PF.partner.filter(x => x.nehmen).length) + ' ausgewählt';
+}
+
+function pfErgebnisZeigen(){
+  const alt = document.getElementById('pfErg'); if (alt) alt.remove();
+  const d = document.createElement('div');
+  d.id = 'pfErg'; d.className = 'modal';
+  const kopf = `<tr><th style="width:26px"></th><th>Name</th><th>Mailadresse</th>
+                <th>Firma</th><th>Verkehr</th></tr>`;
+  d.innerHTML = `<div class="modalbox" style="width:min(1000px,100%)">
+    <h3>Im Postfach, aber nicht im Bestand</h3>
+    <p class="hint">Verglichen wurde über die Mailadresse und über Nachname plus
+      Vornamensinitiale. ${PF.intern} interne Adressen auf der eigenen Domain und
+      ${PF.gefiltert} automatische Absender sind nicht aufgeführt.
+      <span class="chip" id="pfZahl"></span></p>
+
+    <h4 style="margin:14px 0 4px;font-size:14px">Gepflegte Outlook-Kontakte (${PF.kontakte.length})</h4>
+    ${PF.kontakte.length ? `<table class="mini">${kopf}
+      ${PF.kontakte.map((x, i) => pfZeile(x, i, 'kontakte')).join('')}</table>`
+      : '<p class="hint">Keiner, alle sind schon im Bestand.</p>'}
+
+    <h4 style="margin:16px 0 4px;font-size:14px">Mailpartner der letzten ${PF.monate} Monate (${PF.partner.length})</h4>
+    <p class="hint">Vorausgewählt sind die, denen du selbst geschrieben hast.
+      Sammeladressen wie info@ sind gekennzeichnet und nicht vorausgewählt.</p>
+    ${PF.partner.length ? `<table class="mini">${kopf}
+      ${PF.partner.map((x, i) => pfZeile(x, i, 'partner')).join('')}</table>`
+      : '<p class="hint">Keiner.</p>'}
+
+    <div class="knopfe" style="margin-top:14px">
+      <button class="btn" onclick="pfUebernehmen()">Ausgewählte als Kontakte anlegen</button>
+      <button class="btn ghost" onclick="pfCsv()">Alles als CSV</button>
+      <button class="btn ghost" onclick="pfAlle('partner',false)">Mailpartner abwählen</button>
+      <button class="btn ghost" onclick="document.getElementById('pfErg').remove()">Schliessen</button>
+    </div>
+    <p class="hint">Angelegte Kontakte stehen zuerst nur im Browser. Erst dein
+      Klick auf Speichern schreibt sie nach OneDrive.</p>
+  </div>`;
+  document.body.appendChild(d);
+  pfZahlZeigen();
+}
+
+// --------------------------------------------------------------------- Uebernehmen
+function pfUebernehmen(){
+  const alle = PF.kontakte.filter(x => x.nehmen).concat(PF.partner.filter(x => x.nehmen));
+  if (!alle.length){ toast('Nichts ausgewählt'); return; }
+  if (!confirm(alle.length + ' Personen als neue Kontakte anlegen?\n\n'
+             + 'Sie landen zunächst nur im Browser. Nach OneDrive kommen sie erst '
+             + 'mit deinem Klick auf Speichern.')) return;
+
+  // Nummern laufen immer weiter, eine geloeschte id wird nie wiederverwendet
+  let n = D.kontakte.reduce((m, k) => Math.max(m, parseInt((k.id || '').slice(1), 10) || 0), 0);
+  const neu = [];
+  alle.forEach(x => {
+    n++;
+    neu.push({id: 'K' + String(n).padStart(3, '0'),
+      titel: '', vorname: x.vorname || '', nachname: x.nachname || '',
+      funktion: x.funktion || '', firma: x.firma || '', firmaId: '',
+      strasse: x.strasse || '', plz: x.plz || '', ort: x.ort || '', land: x.land || '',
+      tel: x.tel || '', mobil: x.mobil || '', fax: '', mail: x.mail || '',
+      web: '', linkedin: '', bereich: '', quelle: 'Outlook-Abgleich',
+      erfasstAm: heute(), kennengelerntAm: x.letzte || '', geburtstag: '',
+      details: '', kommentar: 'Aus dem Postfach übernommen am ' + heute()
+        + (x.an || x.von ? ' (' + x.an + ' gesendet, ' + x.von + ' erhalten)' : ''),
+      karten: [], logo: '', geprueft: false, geprueftAm: '', abgleichIgnoriert: false});
+  });
+  D.kontakte.push(...neu);
+  if (!D.quellen.includes('Outlook-Abgleich')) D.quellen.push('Outlook-Abgleich');
+  persist();
+  PF.kontakte = PF.kontakte.filter(x => !x.nehmen);
+  PF.partner = PF.partner.filter(x => !x.nehmen);
+  render();
+  const e = document.getElementById('pfErg'); if (e) e.remove();
+  toast(neu.length + ' Kontakte angelegt, noch nicht gespeichert');
+}
+
+function pfCsv(){
+  const sp = ';';
+  const kopf = ['Quelle','Vorname','Nachname','Mail','Firma','Funktion','Telefon','Mobil',
+                'Ort','Land','gesendet','erhalten','Kopie','zuletzt','Art'];
+  const zeilen = [kopf.join(sp)];
+  PF.kontakte.concat(PF.partner).forEach(x => zeilen.push([
+    x.quelle === 'outlook' ? 'Outlook-Kontakt' : 'Mailpartner',
+    x.vorname, x.nachname, x.mail, x.firma, x.funktion, x.tel, x.mobil,
+    x.ort, x.land, x.an, x.von, x.cc, x.letzte, x.art
+  ].map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(sp)));
+  download('postfach_abgleich.csv', '﻿' + zeilen.join('\r\n'), 'text/csv');
 }
 
 // ----------------------------------------------------------------- Start
