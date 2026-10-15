@@ -160,6 +160,27 @@
             max-height:90vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.25)}
   .modalbox h3{margin:0 0 6px;font-size:17px}
   .modalbox .hint{display:block;margin-bottom:6px}
+  .modalbox.breit{width:min(900px,100%)}
+  .zfliste{max-height:52vh;overflow:auto;margin-top:8px}
+  .zfzeile{border:1px solid var(--line);border-radius:7px;padding:8px 10px;margin-bottom:7px}
+  .zfgrund{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .zfnamen{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:3px 0 6px}
+  .zfnamen span{font-weight:600}
+  .zfnamen i{display:block;font-weight:400;font-style:normal;font-size:12px;color:var(--muted)}
+  .zfknoepfe{display:flex;gap:7px}
+  .zftab{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  .zftab th{text-align:left;width:150px;padding:4px 8px 4px 0;vertical-align:top;
+            font-weight:600;color:var(--muted)}
+  .zftab td{padding:2px 4px 2px 0;vertical-align:top;width:50%}
+  .zftab tr.kopf td{padding-bottom:9px}
+  .zftab tr.gleich td{padding:4px 0;color:var(--muted)}
+  .zfwert{display:block;width:100%;text-align:left;padding:5px 8px;border:1px solid var(--line);
+          border-radius:5px;background:#fff;cursor:pointer;font:inherit;white-space:pre-wrap;
+          word-break:break-word;color:var(--ink)}
+  .zfwert:hover{border-color:var(--accent)}
+  .zfwert.an{border-color:var(--accent);background:var(--accent-light);font-weight:600}
+  .zfwert.klein{display:inline-block;width:auto;margin-top:4px;font-size:12px;padding:3px 7px}
+  .zfwert i{color:var(--muted);font-size:12px;font-style:italic}
 
   /* ---------------------------------------------------- Dokument im esp-Stil, A4 */
   #druck{position:fixed;inset:0;z-index:70;background:#e9edf2;overflow:auto}
@@ -929,7 +950,8 @@ function migrate(d){
   d.kontakte.forEach(k => { k.karten ||= []; k.kommentar ||= ''; k.details ||= '';
     k.geburtstag ||= ''; k.quelle ||= ''; k.erfasstAm ||= heute(); k.kennengelerntAm ||= '';
     k.logo ||= ''; k.bereich ||= ''; k.geprueft ||= false; k.geprueftAm ||= '';
-    k.abgleichIgnoriert ||= false; });
+    k.abgleichIgnoriert ||= false; k.fotos ||= []; });
+  d.dublettenIgnoriert ||= [];
   d.firmen.forEach(f => { f.kommentar ||= ''; f.logo ||= ''; f.standorte ||= [];
     f.standorte.forEach(s => { s.bez ||= ''; s.strasse ||= ''; s.plz ||= ''; s.ort ||= '';
       s.land ||= ''; s.maps ||= ''; }); });
@@ -1135,7 +1157,8 @@ function renderFilters(){
       <label class="hint"><input type="checkbox" id="fsel" ${filt.nurAuswahl?'checked':''}>
         nur markierte</label>
       <button class="btn green small" onclick="neuerKontakt()">+ Kontakt</button>
-      <button class="btn ghost small" onclick="massenAuf()">Sichtbare zuordnen …</button>`;
+      <button class="btn ghost small" onclick="massenAuf()">Sichtbare zuordnen …</button>
+      <button class="btn ghost small" onclick="dublettenSuchen()">Dubletten suchen …</button>`;
     $('#fq').oninput = e => { filt.q = e.target.value; renderList(); };
     $('#fb').onchange = e => { filt.bereich = e.target.value; renderList(); };
     $('#fqu').onchange = e => { filt.quelle = e.target.value; renderList(); };
@@ -1201,7 +1224,8 @@ function sichtbareKontakte(){
   return D.kontakte.filter(k => {
     const f = firmaVon(k);
     const t = [nameVon(k), k.firma, f?f.name:'', k.ort, k.mail, k.funktion, k.bereich, k.kommentar,
-               k.details, k.quelle].join(' ');
+               k.details, k.quelle, k.tel, k.mobil, k.strasse, k.plz, k.land,
+               k.linkedin, k.web, k.id].join(' ');
     if (!passt(t)) return false;
     if (filt.bereich && k.bereich !== filt.bereich) return false;
     if (filt.quelle === '__leer' ? k.quelle : filt.quelle && k.quelle !== filt.quelle) return false;
@@ -2633,6 +2657,315 @@ function zuruecksetzen(){
   if (!confirm('Alle lokalen Änderungen verwerfen und den Stand frisch aus OneDrive holen?')) return;
   try { localStorage.removeItem(LS); } catch(e){}
   odLadenKlick(true);
+}
+
+// ================================================================= Dubletten und Zusammenfuehren
+// Zwei Teile: eine Suche, die Verdachtspaare vorschlaegt, und ein Dialog, in dem
+// je Feld entschieden wird, welcher Wert bleibt. Der aufgeloeste Datensatz wird
+// geloescht, vorher wandern Protokolle, Karten- und Fotobilder auf den
+// Hauptdatensatz. Das letzte Zusammenfuehren laesst sich rueckgaengig machen.
+
+const ZF = {paare: [], haupt: null, zweit: null, wahl: {}, zurueck: null};
+
+const ZF_FELDER = [
+  ['titel', 'Titel'], ['vorname', 'Vorname'], ['nachname', 'Nachname'],
+  ['funktion', 'Funktion'], ['firmaId', 'Firma'], ['firmaZusatz', 'Firmenzusatz'],
+  ['strasse', 'Strasse'], ['plz', 'PLZ'], ['ort', 'Ort'], ['land', 'Land'],
+  ['tel', 'Telefon'], ['mobil', 'Mobil'], ['fax', 'Fax'], ['mail', 'Mail'],
+  ['web', 'Web'], ['linkedin', 'LinkedIn'], ['maps', 'Karte'],
+  ['bereich', 'Bereich'], ['quelle', 'Quelle'], ['erfasstAm', 'Erfasst am'],
+  ['kennengelerntAm', 'Kennengelernt am'], ['geburtstag', 'Geburtstag'],
+  ['logo', 'Logo'], ['details', 'Details'], ['kommentar', 'Kommentar']
+];
+// Bei diesen Feldern ist "beide" sinnvoll, weil es Fliesstext ist.
+const ZF_BEIDE = {details: 1, kommentar: 1};
+
+// Umlaute, Bindestriche und Leerzeichen weg, damit "Mueller" und "Müller"
+// als derselbe Name erkannt werden.
+function zfNorm(s){
+  return (s == null ? '' : String(s)).normalize('NFD')
+    .replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/ß/g, 'ss').replace(/[^a-z0-9]/g, '');
+}
+function zfMail(k){ return (k.mail || '').trim().toLowerCase(); }
+function zfPaarId(a, b){ return [a.id, b.id].sort().join('|'); }
+
+// Sammeladressen wie info@ oder sales@ tragen keinen Personennamen. Ihr "Name"
+// ist aus der Adresse abgeleitet und daher bei hunderten Firmen derselbe. Beim
+// Namensvergleich bleiben sie darum aussen vor, sonst passt jede info-Adresse
+// zu jeder anderen. Ueber die Mailadresse werden sie weiterhin gefunden.
+const ZF_SAMMEL = new Set(['info', 'office', 'kontakt', 'contact', 'contacts', 'sales',
+  'vertrieb', 'verkauf', 'einkauf', 'purchasing', 'service', 'support', 'hello', 'hallo',
+  'team', 'mail', 'email', 'anfrage', 'enquiry', 'inquiry', 'order', 'orders', 'auftrag',
+  'empfang', 'reception', 'technik', 'technical', 'engineering', 'buchhaltung', 'accounting',
+  'rechnung', 'invoice', 'hr', 'jobs', 'presse', 'press', 'marketing', 'welcome', 'admin',
+  'logistik', 'versand', 'shipping', 'export', 'zoll', 'customs', 'qs', 'qm', 'it', 'edv']);
+
+function zfKeinSammel(k){
+  const lokal = zfMail(k).split('@')[0].replace(/[._-].*$/, '');
+  return !ZF_SAMMEL.has(lokal);
+}
+// Fuer den Vergleich ueber den vollen Namen braucht es Vor- und Nachnamen.
+function zfNameTaugt(k){
+  return !!zfNorm(k.vorname) && !!zfNorm(k.nachname) && zfKeinSammel(k);
+}
+
+// ----------------------------------------------------------------- Suche
+function dublettenSuchen(){
+  D.dublettenIgnoriert ||= [];
+  const weg = new Set(D.dublettenIgnoriert);
+  const gefunden = new Map();
+  const nimm = (a, b, rang, grund) => {
+    const id = zfPaarId(a, b);
+    if (weg.has(id)) return;
+    const alt = gefunden.get(id);
+    if (alt && alt.rang <= rang) return;
+    gefunden.set(id, {a, b, rang, grund});
+  };
+
+  // Die Namen werden einmal normalisiert, nicht in jedem Vergleich erneut.
+  const nachMail = new Map(), nachName = new Map(), nachNachname = new Map();
+  const norm = new Map();
+  const lege = (m, s, k) => { let a = m.get(s); if (!a) m.set(s, a = []); a.push(k); };
+  D.kontakte.forEach(k => {
+    const v = zfNorm(k.vorname), n = zfNorm(k.nachname), m = zfMail(k);
+    const taugt = zfNameTaugt(k);
+    norm.set(k.id, {v, n, taugt});
+    if (m) lege(nachMail, m, k);
+    if (taugt) lege(nachName, v + '|' + n, k);
+    // Beim Nachnamen in derselben Firma darf der Vorname fehlen, sonst faende
+    // man "Slatter" neben "Dr. Rolf Slatter" nicht.
+    if (n && zfKeinSammel(k)) lege(nachNachname, n, k);
+  });
+
+  // 1) gleiche Mailadresse
+  nachMail.forEach(arr => { for (let i = 0; i < arr.length; i++)
+    for (let j = i + 1; j < arr.length; j++) nimm(arr[i], arr[j], 1, 'gleiche Mailadresse'); });
+
+  // 2) gleicher Vor- und Nachname
+  nachName.forEach(arr => { for (let i = 0; i < arr.length; i++)
+    for (let j = i + 1; j < arr.length; j++) nimm(arr[i], arr[j], 2, 'gleicher Name'); });
+
+  // 3) gleicher Nachname bei gleicher Firma, Vorname faengt gleich an
+  // 4) Vor- und Nachname vertauscht, haeufig bei Namen aus der Mailadresse
+  nachNachname.forEach(arr => {
+    for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++){
+      const a = arr[i], b = arr[j];
+      if (!a.firmaId || a.firmaId !== b.firmaId) continue;
+      const va = norm.get(a.id).v, vb = norm.get(b.id).v;
+      if (va && vb && va[0] === vb[0])
+        nimm(a, b, 3, 'gleicher Nachname in derselben Firma');
+      else if (!va || !vb)
+        nimm(a, b, 3, 'gleicher Nachname in derselben Firma, ein Vorname fehlt');
+    }
+  });
+
+  // 4) Vorname und Nachname vertauscht. Kommt haeufig vor, wenn der Name aus
+  // einer Adresse der Form nachname.vorname@ abgeleitet wurde.
+  D.kontakte.forEach(a => {
+    const {v, n, taugt} = norm.get(a.id);
+    if (!taugt || v === n) return;
+    (nachName.get(n + '|' + v) || []).forEach(b => {
+      if (a.id < b.id) nimm(a, b, 2, 'Vor- und Nachname vertauscht');
+    });
+  });
+
+  ZF.paare = [...gefunden.values()].sort((x, y) => x.rang - y.rang ||
+    nameVon(x.a).localeCompare(nameVon(y.a)));
+  dublettenZeigen();
+}
+
+function dublettenZeigen(){
+  const alt = document.getElementById('zfListe'); if (alt) alt.remove();
+  const d = document.createElement('div');
+  d.id = 'zfListe'; d.className = 'modal';
+  const zurueck = ZF.zurueck
+    ? `<button class="btn ghost small" onclick="zusammenfuehrenZurueck()">Letztes
+         Zusammenführen rückgängig</button>` : '';
+  const zeilen = ZF.paare.length ? ZF.paare.map(p => `
+    <div class="zfzeile">
+      <div class="zfgrund">${esc(p.grund)}</div>
+      <div class="zfnamen">
+        <span>${esc(nameVon(p.a))}<i>${esc(p.a.firma || '')} ${esc(p.a.mail || '')}</i></span>
+        <span>${esc(nameVon(p.b))}<i>${esc(p.b.firma || '')} ${esc(p.b.mail || '')}</i></span>
+      </div>
+      <div class="zfknoepfe">
+        <button class="btn small" onclick="zusammenfuehrenDialog('${p.a.id}','${p.b.id}')">
+          Zusammenführen …</button>
+        <button class="btn ghost small" onclick="dublettePasst('${p.a.id}','${p.b.id}')">
+          Kein Duplikat</button>
+      </div>
+    </div>`).join('')
+    : '<p class="hint">Keine Verdachtsfälle gefunden.</p>';
+  d.innerHTML = `<div class="modalbox breit">
+    <h3>Mögliche Dubletten</h3>
+    <p class="hint">${ZF.paare.length} Paare. Verglichen werden Mailadresse, Name,
+      gleicher Nachname in derselben Firma und vertauschter Vor- und Nachname.
+      "Kein Duplikat" merkt sich das Paar dauerhaft.</p>
+    <div class="zfliste">${zeilen}</div>
+    <div class="knopfe" style="margin-top:12px">
+      ${zurueck}
+      <button class="btn ghost" onclick="document.getElementById('zfListe').remove()">
+        Schliessen</button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+}
+
+function dublettePasst(ida, idb){
+  D.dublettenIgnoriert ||= [];
+  const id = [ida, idb].sort().join('|');
+  if (!D.dublettenIgnoriert.includes(id)) D.dublettenIgnoriert.push(id);
+  ZF.paare = ZF.paare.filter(p => zfPaarId(p.a, p.b) !== id);
+  persist(); dublettenZeigen();
+}
+
+// ----------------------------------------------------------------- Dialog
+function zusammenfuehrenAuswahl(){
+  const ids = [...auswahl];
+  if (ids.length !== 2) return toast('Bitte genau zwei Kontakte markieren');
+  zusammenfuehrenDialog(ids[0], ids[1]);
+}
+
+function zfAnzeige(k, feld){
+  if (feld === 'firmaId'){
+    const f = firmaVon(k);
+    return f ? f.name : (k.firma || '');
+  }
+  return k[feld] == null ? '' : String(k[feld]);
+}
+
+function zusammenfuehrenDialog(ida, idb){
+  const a = kontaktVon(ida), b = kontaktVon(idb);
+  if (!a || !b) return toast('Kontakt nicht gefunden');
+  ZF.haupt = a; ZF.zweit = b; ZF.wahl = {};
+  ZF_FELDER.forEach(([f]) => { ZF.wahl[f] = zfAnzeige(a, f) ? 'a' : (zfAnzeige(b, f) ? 'b' : 'a'); });
+  zfDialogZeichnen();
+}
+
+function zfHauptTauschen(){
+  const h = ZF.haupt; ZF.haupt = ZF.zweit; ZF.zweit = h;
+  const um = {a: 'b', b: 'a', beide: 'beide'};
+  Object.keys(ZF.wahl).forEach(f => ZF.wahl[f] = um[ZF.wahl[f]]);
+  zfDialogZeichnen();
+}
+
+function zfWaehlen(feld, seite){ ZF.wahl[feld] = seite; zfDialogZeichnen(); }
+
+function zfDialogZeichnen(){
+  const alt = document.getElementById('zfDialog'); if (alt) alt.remove();
+  const a = ZF.haupt, b = ZF.zweit;
+  const knopf = (f, seite, txt) => {
+    const aktiv = ZF.wahl[f] === seite;
+    return `<button type="button" class="zfwert ${aktiv ? 'an' : ''}"
+      onclick="zfWaehlen('${f}','${seite}')">${txt ? esc(txt) : '<i>leer</i>'}</button>`;
+  };
+  const zeilen = ZF_FELDER.map(([f, label]) => {
+    const va = zfAnzeige(a, f), vb = zfAnzeige(b, f);
+    if (!va && !vb) return '';
+    if (va === vb) return `<tr class="gleich"><th>${esc(label)}</th>
+      <td colspan="2">${esc(va)}</td></tr>`;
+    const dritte = ZF_BEIDE[f] && va && vb
+      ? `<button type="button" class="zfwert klein ${ZF.wahl[f] === 'beide' ? 'an' : ''}"
+           onclick="zfWaehlen('${f}','beide')">beide untereinander</button>` : '';
+    return `<tr><th>${esc(label)}</th>
+      <td>${knopf(f, 'a', va)}</td><td>${knopf(f, 'b', vb)}${dritte}</td></tr>`;
+  }).join('');
+
+  const karten = [...new Set([...(a.karten || []), ...(b.karten || [])])];
+  const fotos = [...new Set([...(a.fotos || []), ...(b.fotos || [])])];
+  const prot = D.meetings.filter(m => (m.kontaktIds || []).includes(b.id)).length;
+
+  const d = document.createElement('div');
+  d.id = 'zfDialog'; d.className = 'modal';
+  d.innerHTML = `<div class="modalbox breit">
+    <h3>Kontakte zusammenführen</h3>
+    <p class="hint">Links der Hauptdatensatz, er bleibt bestehen. Rechts der Datensatz,
+      der danach gelöscht wird. Je Zeile den Wert anklicken, der bleiben soll.</p>
+    <table class="zftab">
+      <tr class="kopf"><th></th>
+        <td><b>${esc(nameVon(a))}</b><br><i>${esc(a.id)}, bleibt</i></td>
+        <td><b>${esc(nameVon(b))}</b><br><i>${esc(b.id)}, wird gelöscht</i>
+          <br><button type="button" class="zfwert klein" onclick="zfHauptTauschen()">
+            Seiten tauschen</button></td></tr>
+      ${zeilen}
+    </table>
+    <p class="hint" style="margin-top:10px">
+      Wandern mit auf ${esc(a.id)}: ${prot} Protokolle, ${karten.length} Kartenbilder,
+      ${fotos.length} Fotos. Markierung als Favorit und der Vermerk "nicht abgleichen"
+      bleiben erhalten, wenn einer der beiden sie trägt.</p>
+    <div class="knopfe" style="margin-top:12px">
+      <button class="btn" onclick="zusammenfuehrenAusfuehren()">Zusammenführen</button>
+      <button class="btn ghost" onclick="document.getElementById('zfDialog').remove()">
+        Abbrechen</button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+}
+
+// ----------------------------------------------------------------- Ausfuehren
+function zusammenfuehrenAusfuehren(){
+  const a = ZF.haupt, b = ZF.zweit;
+  if (!a || !b) return;
+  if (!confirm(nameVon(b) + ' (' + b.id + ') wird gelöscht. Fortfahren?')) return;
+
+  // Fuer das Rueckgaengigmachen den Stand vorher sichern
+  ZF.zurueck = {
+    haupt: JSON.parse(JSON.stringify(a)),
+    zweit: JSON.parse(JSON.stringify(b)),
+    platz: D.kontakte.indexOf(b),
+    meetings: D.meetings.filter(m => (m.kontaktIds || []).includes(b.id))
+                        .map(m => ({id: m.id, ids: [...m.kontaktIds]}))
+  };
+
+  ZF_FELDER.forEach(([f]) => {
+    const va = zfAnzeige(a, f), vb = zfAnzeige(b, f);
+    const w = ZF.wahl[f];
+    if (f === 'firmaId'){
+      if (w === 'b'){ a.firmaId = b.firmaId; a.firma = b.firma; }
+      return;
+    }
+    if (w === 'b') a[f] = b[f];
+    else if (w === 'beide') a[f] = [va, vb].filter(Boolean).join('\n');
+  });
+
+  a.karten = [...new Set([...(a.karten || []), ...(b.karten || [])])];
+  a.fotos = [...new Set([...(a.fotos || []), ...(b.fotos || [])])];
+  a.favorit = !!(a.favorit || b.favorit);
+  a.abgleichIgnoriert = !!(a.abgleichIgnoriert || b.abgleichIgnoriert);
+  a.details = ((a.details || '') + '\nZusammengeführt aus ' + b.id + ' am ' + heute() + '.').trim();
+
+  D.meetings.forEach(m => {
+    if (!(m.kontaktIds || []).includes(b.id)) return;
+    m.kontaktIds = [...new Set(m.kontaktIds.map(x => x === b.id ? a.id : x))];
+  });
+
+  D.kontakte = D.kontakte.filter(k => k.id !== b.id);
+  if (auswahl.delete(b.id)) auswahlMerken();
+  if (sel.kontakte === b.id) sel.kontakte = a.id;
+  ZF.paare = ZF.paare.filter(p => p.a.id !== b.id && p.b.id !== b.id);
+
+  const dlg = document.getElementById('zfDialog'); if (dlg) dlg.remove();
+  persist(); render();
+  if (document.getElementById('zfListe')) dublettenZeigen();
+  toast('Zusammengeführt auf ' + a.id);
+}
+
+function zusammenfuehrenZurueck(){
+  const z = ZF.zurueck;
+  if (!z) return toast('Nichts rückgängig zu machen');
+  const i = D.kontakte.findIndex(k => k.id === z.haupt.id);
+  if (i >= 0) D.kontakte[i] = JSON.parse(JSON.stringify(z.haupt));
+  const platz = z.platz >= 0 && z.platz <= D.kontakte.length ? z.platz : D.kontakte.length;
+  D.kontakte.splice(platz, 0, JSON.parse(JSON.stringify(z.zweit)));
+  z.meetings.forEach(s => {
+    const m = D.meetings.find(x => x.id === s.id);
+    if (m) m.kontaktIds = [...s.ids];
+  });
+  ZF.zurueck = null;
+  persist(); render();
+  if (document.getElementById('zfListe')) dublettenZeigen();
+  toast('Zusammenführen rückgängig gemacht');
 }
 
 // ----------------------------------------------------------------- Marke im Seitenkopf
