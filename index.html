@@ -2683,10 +2683,18 @@ const ZF_BEIDE = {details: 1, kommentar: 1};
 // Umlaute, Bindestriche und Leerzeichen weg, damit "Mueller" und "Müller"
 // als derselbe Name erkannt werden.
 function zfNorm(s){
-  return (s == null ? '' : String(s)).normalize('NFD')
-    .replace(/[̀-ͯ]/g, '').toLowerCase()
-    .replace(/ß/g, 'ss').replace(/[^a-z0-9]/g, '');
+  // Reihenfolge ist entscheidend: NFD zerlegt ü in u plus Trema, und das
+  // Trema faellt danach weg. Dann stuende "muller" gegen "mueller", und
+  // Zuercher gegen Zürcher waere nie als Paar aufgefallen. Darum erst die
+  // deutsche Umschrift, dann die Zerlegung fuer alle uebrigen Akzente.
+  return (s == null ? '' : String(s)).toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/ł/g, 'l')
+    .replace(/đ/g, 'd').replace(/ð/g, 'd').replace(/þ/g, 'th')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
 }
+
 function zfMail(k){ return (k.mail || '').trim().toLowerCase(); }
 function zfPaarId(a, b){ return [a.id, b.id].sort().join('|'); }
 
@@ -2836,6 +2844,7 @@ function zfAnzeige(k, feld){
 }
 
 function zusammenfuehrenDialog(ida, idb){
+  if (ida === idb) return toast('Das ist derselbe Kontakt');
   const a = kontaktVon(ida), b = kontaktVon(idb);
   if (!a || !b) return toast('Kontakt nicht gefunden');
   ZF.haupt = a; ZF.zweit = b; ZF.wahl = {};
@@ -2905,8 +2914,19 @@ function zfDialogZeichnen(){
 
 // ----------------------------------------------------------------- Ausfuehren
 function zusammenfuehrenAusfuehren(){
-  const a = ZF.haupt, b = ZF.zweit;
-  if (!a || !b) return;
+  // Zwischen dem Oeffnen des Dialogs und hier kann der Bestand ausgetauscht
+  // worden sein, etwa weil das Laden aus OneDrive fertig wurde. Dann zeigen
+  // ZF.haupt und ZF.zweit auf Datensaetze, die so nicht mehr im Bestand
+  // stehen, und das Zusammenfuehren ginge ins Leere. Darum beide ueber die
+  // Nummer neu holen.
+  const a = ZF.haupt && kontaktVon(ZF.haupt.id);
+  const b = ZF.zweit && kontaktVon(ZF.zweit.id);
+  if (!a || !b){
+    const weg = document.getElementById('zfDialog'); if (weg) weg.remove();
+    return toast('Der Bestand hat sich geaendert, bitte neu auswaehlen');
+  }
+  if (a.id === b.id) return toast('Das ist derselbe Kontakt');
+  ZF.haupt = a; ZF.zweit = b;
   if (!confirm(nameVon(b) + ' (' + b.id + ') wird gelöscht. Fortfahren?')) return;
 
   // Fuer das Rueckgaengigmachen den Stand vorher sichern
@@ -2933,7 +2953,17 @@ function zusammenfuehrenAusfuehren(){
   a.fotos = [...new Set([...(a.fotos || []), ...(b.fotos || [])])];
   a.favorit = !!(a.favorit || b.favorit);
   a.abgleichIgnoriert = !!(a.abgleichIgnoriert || b.abgleichIgnoriert);
+  // "Geprueft" gilt nur weiter, wenn es fuer beide galt. Sonst stuende ein
+  // Datensatz als geprueft da, in dem ungepruefte Werte stecken.
+  if (a.geprueft && !b.geprueft){ a.geprueft = false; a.geprueftAm = ''; }
+  if (ZF.wahl.linkedin === 'b') a.linkedinGeprueft = !!b.linkedinGeprueft;
   a.details = ((a.details || '') + '\nZusammengeführt aus ' + b.id + ' am ' + heute() + '.').trim();
+
+  // Kam die Anschrift vom zweiten Datensatz, zeigte der Kartenlink sonst
+  // weiter auf die alte Adresse.
+  if (['strasse', 'plz', 'ort', 'land'].some(f => ZF.wahl[f] === 'b')
+      && ZF.wahl.maps !== 'b' && typeof mapsVon === 'function')
+    a.maps = mapsVon(a.strasse, a.plz, a.ort, a.land, a.firma);
 
   D.meetings.forEach(m => {
     if (!(m.kontaktIds || []).includes(b.id)) return;
@@ -2954,6 +2984,12 @@ function zusammenfuehrenAusfuehren(){
 function zusammenfuehrenZurueck(){
   const z = ZF.zurueck;
   if (!z) return toast('Nichts rückgängig zu machen');
+  // Die Nummer des aufgeloesten Kontakts war seit dem Zusammenfuehren frei
+  // und kann inzwischen neu vergeben worden sein. Dann gaebe es sie nach dem
+  // Zurueckholen zweimal, und die App faende immer nur den ersten.
+  if (D.kontakte.some(k => k.id === z.zweit.id))
+    return toast('Nummer ' + z.zweit.id + ' ist inzwischen neu vergeben, '
+                 + 'rueckgaengig geht nicht mehr');
   const i = D.kontakte.findIndex(k => k.id === z.haupt.id);
   if (i >= 0) D.kontakte[i] = JSON.parse(JSON.stringify(z.haupt));
   const platz = z.platz >= 0 && z.platz <= D.kontakte.length ? z.platz : D.kontakte.length;
