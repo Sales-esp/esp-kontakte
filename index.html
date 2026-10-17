@@ -2990,6 +2990,14 @@ function markeSetzen(){
 const AUF_ORDNER = 'Auftraege';
 const LS_AUF = 'esp_kontakte_auftrag';
 
+// Die drei Maskottchenstile fuer die Mailentwuerfe. Der Stil faerbt in der
+// fertigen Mail den Streifen am Block, den Kopfstreifen und die Verweise.
+const AUF_STILE = [
+  ['edi',   'Edi, Eule, Blau'],
+  ['sigi',  'Sigi, Fuchs, Orange'],
+  ['pauli', 'Pauli, Biber, Braun'],
+];
+
 const AUF_VORLAGEN = [
   ['dank', 'Dankesmail nach dem Treffen',
    'Schreibe eine kurze, persoenliche Dankesmail fuer das Gespraech. '
@@ -3072,6 +3080,13 @@ function auftragDialog(einzelId){
         <option value="en" ${m.sprache === 'en' ? 'selected' : ''}>Englisch</option>
       </select></div>
 
+    <div class="fld"><label for="aufStil">Stil der Mail</label>
+      <select id="aufStil">
+        ${AUF_STILE.map(([k, l]) =>
+          `<option value="${k}" ${(m.stil || 'edi') === k ? 'selected' : ''}>${esc(l)}</option>`
+        ).join('')}
+      </select></div>
+
     <label class="hint"><input type="checkbox" id="aufProt" ${m.prot === false ? '' : 'checked'}>
       Entwurf als Protokolleintrag beim Kontakt ablegen</label>
     <label class="hint"><input type="checkbox" id="aufEml" ${m.eml === false ? '' : 'checked'}>
@@ -3113,10 +3128,11 @@ async function auftragAblegen(){
 
   const vorlage = document.getElementById('aufVorlage').value;
   const sprache = document.getElementById('aufSprache').value;
+  const stil = (document.getElementById('aufStil') || {}).value || 'edi';
   const prot = document.getElementById('aufProt').checked;
   const eml = document.getElementById('aufEml').checked;
   if (!prot && !eml){ toast('Bitte mindestens eine Ablage für das Ergebnis wählen'); return; }
-  aufMerken({vorlage, sprache, prot, eml});
+  aufMerken({vorlage, sprache, stil, prot, eml});
 
   const ergebnis = [];
   if (prot) ergebnis.push('protokoll');
@@ -3137,6 +3153,7 @@ async function auftragAblegen(){
     auftrag: text,
     vorlage: vorlage,
     sprache: sprache,
+    stil: stil,
     ergebnis: ergebnis,
     anzahl: kontakte.length,
     kontakte: kontakte,
