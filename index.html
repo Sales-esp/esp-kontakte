@@ -3124,7 +3124,7 @@ function auftragDialog(einzelId){
       </select></div>
 
     <label class="hint"><input type="checkbox" id="aufProt" ${m.prot === false ? '' : 'checked'}>
-      Entwurf als Protokolleintrag beim Kontakt ablegen</label>
+      Aktionen beim Kontakt anlegen: verschicken und nachfassen</label>
     <label class="hint"><input type="checkbox" id="aufEml" ${m.eml === false ? '' : 'checked'}>
       Outlook-Entwurf (.eml) in OneDrive ablegen</label>
     <p class="hint">Verschickt wird nichts. Die Entwuerfe liegen danach in
@@ -3171,7 +3171,10 @@ async function auftragAblegen(){
   aufMerken({vorlage, sprache, stil, prot, eml});
 
   const ergebnis = [];
-  if (prot) ergebnis.push('protokoll');
+  // "aktion" statt des frueheren "protokoll": der Lauf legt je Kontakt ein
+  // Protokoll mit dem Betreff an und darin zwei Aktionen, verschicken und
+  // nachfassen. Der Mailtext bleibt allein in der .eml-Datei.
+  if (prot) ergebnis.push('aktion');
   if (eml) ergebnis.push('eml');
 
   // Der Zeitstempel geht nur auf die Sekunde. Zwei Auftraege kurz nacheinander
