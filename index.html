@@ -181,6 +181,11 @@
   .zfwert.an{border-color:var(--accent);background:var(--accent-light);font-weight:600}
   .zfwert.klein{display:inline-block;width:auto;margin-top:4px;font-size:12px;padding:3px 7px}
   .zfwert i{color:var(--muted);font-size:12px;font-style:italic}
+  .vltab{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+  .vltab td{padding:3px 8px 3px 0;vertical-align:top;border-bottom:1px solid var(--line)}
+  .vltab tr:last-child td{border-bottom:0}
+  .vldat{white-space:nowrap;color:var(--muted);width:92px}
+  .vlart{white-space:nowrap;font-weight:600;width:120px}
 
   /* ---------------------------------------------------- Dokument im esp-Stil, A4 */
   #druck{position:fixed;inset:0;z-index:70;background:#e9edf2;overflow:auto}
@@ -950,8 +955,9 @@ function migrate(d){
   d.kontakte.forEach(k => { k.karten ||= []; k.kommentar ||= ''; k.details ||= '';
     k.geburtstag ||= ''; k.quelle ||= ''; k.erfasstAm ||= heute(); k.kennengelerntAm ||= '';
     k.logo ||= ''; k.bereich ||= ''; k.geprueft ||= false; k.geprueftAm ||= '';
-    k.abgleichIgnoriert ||= false; k.fotos ||= []; });
+    k.abgleichIgnoriert ||= false; k.fotos ||= []; k.verlauf ||= []; });
   d.dublettenIgnoriert ||= [];
+  d.papierkorb ||= [];
   d.firmen.forEach(f => { f.kommentar ||= ''; f.logo ||= ''; f.standorte ||= [];
     f.standorte.forEach(s => { s.bez ||= ''; s.strasse ||= ''; s.plz ||= ''; s.ort ||= '';
       s.land ||= ''; s.maps ||= ''; }); });
@@ -1158,7 +1164,9 @@ function renderFilters(){
         nur markierte</label>
       <button class="btn green small" onclick="neuerKontakt()">+ Kontakt</button>
       <button class="btn ghost small" onclick="massenAuf()">Sichtbare zuordnen …</button>
-      <button class="btn ghost small" onclick="dublettenSuchen()">Dubletten suchen …</button>`;
+      <button class="btn ghost small" onclick="dublettenSuchen()">Dubletten suchen …</button>
+      <button class="btn ghost small" onclick="markierteLoeschen()">Markierte löschen …</button>
+      <button class="btn ghost small" onclick="papierkorbZeigen()">Papierkorb …</button>`;
     $('#fq').oninput = e => { filt.q = e.target.value; renderList(); };
     $('#fb').onchange = e => { filt.bereich = e.target.value; renderList(); };
     $('#fqu').onchange = e => { filt.quelle = e.target.value; renderList(); };
@@ -1755,7 +1763,19 @@ function upd(art, id, feld, wert){
           : art==='firma'   ? D.firmen.find(f=>f.id===id)
           :                   D.meetings.find(m=>m.id===id);
   if (!o) return;
+  // Vorher merken, damit der Verlauf sagen kann, von was auf was.
+  const vorher = o[feld];
   o[feld] = wert;
+  if (art==='kontakt' && typeof verlaufNotieren === 'function' && vorher !== wert){
+    if (feld==='vorname' || feld==='nachname')
+      verlaufNotieren(o, 'name', (vorher||'(leer)') + ' → ' + (wert||'(leer)'));
+    else if (feld==='mail')
+      verlaufNotieren(o, 'mail', (vorher||'(leer)') + ' → ' + (wert||'(leer)'));
+    else if (feld==='firmaId'){
+      const fa = D.firmen.find(x=>x.id===vorher), fn = D.firmen.find(x=>x.id===wert);
+      verlaufNotieren(o, 'firma', (fa?fa.name:'(keine Firma)') + ' → ' + (fn?fn.name:'(keine Firma)'));
+    }
+  }
   if (art==='kontakt' && feld==='firmaId'){
     const f = D.firmen.find(x=>x.id===wert); if (f) o.firma = f.name; else o.firma = '';
     o.abgleichIgnoriert = false;
@@ -2328,7 +2348,9 @@ function detailKontakt(k){
       ${f('Funktion','kontakt',k.id,'funktion',k.funktion)}
       ${f('Vorname','kontakt',k.id,'vorname',k.vorname)}
       ${f('Nachname','kontakt',k.id,'nachname',k.nachname)}
-      <div class="fld"><label>Firma</label>
+      <div class="fld"><label>Firma
+          <button class="btn ghost small" style="float:right;margin:-2px 0 0"
+            onclick="firmaWechselnAuf('${k.id}')">Firmenwechsel …</button></label>
         <select onchange="upd('kontakt','${k.id}','firmaId',this.value)">
           <option value="">(keine)</option>
           ${D.firmen.slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(x=>
@@ -2371,6 +2393,8 @@ function detailKontakt(k){
       <p class="hint">Zum Beispiel eine Dankesmail. Der Auftrag wird in OneDrive abgelegt,
         Claude schreibt den Entwurf. Verschickt wird nichts.</p>
     </fieldset>
+
+    ${verlaufBox(k)}
 
     <fieldset><legend>Meetings und Protokolle</legend>
       <button class="btn green small" onclick="neuesMeeting('kontakt','${k.id}')">+ Protokoll für diese Person</button>
@@ -2958,6 +2982,8 @@ function zusammenfuehrenAusfuehren(){
   if (a.geprueft && !b.geprueft){ a.geprueft = false; a.geprueftAm = ''; }
   if (ZF.wahl.linkedin === 'b') a.linkedinGeprueft = !!b.linkedinGeprueft;
   a.details = ((a.details || '') + '\nZusammengeführt aus ' + b.id + ' am ' + heute() + '.').trim();
+  if (typeof verlaufNotieren === 'function')
+    verlaufNotieren(a, 'zusammengefuehrt', 'Aus ' + b.id + ' ' + (nameVon(b) || '') + ' übernommen');
 
   // Kam die Anschrift vom zweiten Datensatz, zeigte der Kartenlink sonst
   // weiter auf die alte Adresse.
@@ -3002,6 +3028,232 @@ function zusammenfuehrenZurueck(){
   persist(); render();
   if (document.getElementById('zfListe')) dublettenZeigen();
   toast('Zusammenführen rückgängig gemacht');
+}
+
+// ================================================= Papierkorb, Firmenwechsel, Verlauf
+// Drei Dinge, die zusammengehoeren:
+//   1. Mehrere markierte Kontakte auf einmal loeschen. Sie landen im Papierkorb
+//      und lassen sich von dort zurueckholen, bis er geleert wird.
+//   2. Firmenwechsel: die Person bekommt eine neue Firma, die alte wandert mit
+//      Zeitraum in den Verlauf. Aktuell gilt immer genau eine Firma.
+//   3. Verlauf: Firmenwechsel, Namens- und Mailaenderung, Zusammenfuehrung und
+//      Wiederherstellung stehen mit Datum beim Kontakt.
+//
+// Geloescht wird nie still: jeder Vorgang fragt nach und nennt die Zahl.
+
+const VERLAUF_MAX = 120;   // mehr braucht niemand, und die Datei bleibt schlank
+
+function verlaufNotieren(k, art, text){
+  if (!k || !text) return;
+  k.verlauf = k.verlauf || [];
+  k.verlauf.push({datum: heute(), art: art, text: text});
+  // Nach oben begrenzen, aelteste zuerst weg. Sonst waechst kontakte.json
+  // bei einem Kontakt, an dem viel gearbeitet wird, ohne Ende.
+  if (k.verlauf.length > VERLAUF_MAX) k.verlauf = k.verlauf.slice(-VERLAUF_MAX);
+}
+
+function verlaufText(e){
+  const w = {firma: 'Firma', name: 'Name', mail: 'Mailadresse',
+             zusammengefuehrt: 'Zusammengeführt', papierkorb: 'Papierkorb',
+             sonstiges: 'Notiz'};
+  return (w[e.art] || e.art);
+}
+
+// ------------------------------------------------------------------ Anzeige
+function verlaufBox(k){
+  const v = (k.verlauf || []).slice().reverse();
+  if (!v.length) return '';
+  return `<fieldset><legend>Verlauf</legend>
+    <table class="vltab">${v.map(e => `<tr>
+      <td class="vldat">${esc(e.datum || '')}</td>
+      <td class="vlart">${esc(verlaufText(e))}</td>
+      <td>${esc(e.text || '')}</td></tr>`).join('')}</table>
+    <p class="hint">Festgehalten werden Firmenwechsel, Namens- und Mailänderung,
+      Zusammenführungen und Wiederherstellungen.</p></fieldset>`;
+}
+
+// ------------------------------------------------------------- Firmenwechsel
+function firmaWechselnAuf(id){
+  const k = kontaktVon(id);
+  if (!k) return;
+  if (document.getElementById('fwDialog')) return;
+  const liste = D.firmen.slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const d = document.createElement('div');
+  d.className = 'modal'; d.id = 'fwDialog';
+  d.innerHTML = `<div class="modalbox">
+    <h3>Firmenwechsel: ${esc(nameVon(k))}</h3>
+    <p class="hint">Bisher: ${esc(k.firma || '(keine Firma)')}</p>
+    <div class="fld"><label for="fwFirma">Neue Firma</label>
+      <select id="fwFirma">
+        <option value="">(keine)</option>
+        ${liste.map(x => `<option value="${x.id}" ${x.id === k.firmaId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+      </select></div>
+    <div class="fld"><label for="fwDatum">Seit wann</label>
+      <input type="date" id="fwDatum" value="${heute()}"></div>
+    <label class="hint"><input type="checkbox" id="fwAdresse" checked>
+      Anschrift der neuen Firma übernehmen</label>
+    <label class="hint"><input type="checkbox" id="fwMail">
+      Mailadresse und Telefon leeren, sie gelten beim alten Arbeitgeber</label>
+    <div class="knoepfe" style="margin-top:12px">
+      <button class="btn" onclick="firmaWechselnAusfuehren('${k.id}')">Wechsel eintragen</button>
+      <button class="btn ghost" onclick="document.getElementById('fwDialog').remove()">Abbrechen</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+
+function firmaWechselnAusfuehren(id){
+  const k = kontaktVon(id);
+  if (!k) return;
+  const neuId = document.getElementById('fwFirma').value;
+  const datum = document.getElementById('fwDatum').value || heute();
+  const adresse = document.getElementById('fwAdresse').checked;
+  const mailWeg = document.getElementById('fwMail').checked;
+  if (neuId === (k.firmaId || '')) return toast('Das ist die bisherige Firma');
+
+  const alt = k.firma || '(keine Firma)';
+  const f = neuId ? D.firmen.find(x => x.id === neuId) : null;
+  k.firmaId = neuId;
+  k.firma = f ? f.name : '';
+  k.abgleichIgnoriert = false;
+  if (f && adresse){
+    ['strasse', 'plz', 'ort', 'land'].forEach(x => { k[x] = f[x] || ''; });
+    if (f.web) k.web = f.web;
+    if (f.bereich) k.bereich = f.bereich;
+  }
+  if (mailWeg){ k.mail = ''; k.tel = ''; }
+  k.verlauf = k.verlauf || [];
+  k.verlauf.push({datum: datum, art: 'firma',
+                  text: alt + ' → ' + (k.firma || '(keine Firma)')});
+  if (k.verlauf.length > VERLAUF_MAX) k.verlauf = k.verlauf.slice(-VERLAUF_MAX);
+
+  ableiten('kontakt', k);
+  const w = document.getElementById('fwDialog'); if (w) w.remove();
+  persist(); render();
+  toast('Firmenwechsel eingetragen');
+}
+
+// --------------------------------------------------------------- Papierkorb
+function markierteLoeschen(){
+  const arr = auswahlKontakte();
+  if (!arr.length) return toast('Keine Kontakte markiert');
+  // Protokolle, an denen NUR dieser Kontakt haengt, wandern mit. Protokolle mit
+  // mehreren Teilnehmern bleiben stehen, dort faellt nur der Verweis weg.
+  const ids = new Set(arr.map(k => k.id));
+  const alleinige = D.meetings.filter(m => {
+    const t = (m.kontaktIds || []);
+    return t.length > 0 && t.every(x => ids.has(x));
+  });
+  const text = arr.length + (arr.length === 1 ? ' Kontakt' : ' Kontakte') + ' in den Papierkorb legen?'
+    + (alleinige.length ? '\n' + alleinige.length + ' Protokoll(e) nur dieser Kontakte wandern mit.' : '')
+    + '\nZurückholen geht, solange der Papierkorb nicht geleert wird.';
+  if (!confirm(text)) return;
+
+  const stempel = new Date().toISOString();
+  const mitIds = new Set(alleinige.map(m => m.id));
+  arr.forEach(k => {
+    // An welchen bleibenden Protokollen haengt der Kontakt? Die Nummern merken,
+    // damit das Zurueckholen ihn dort wieder eintragen kann.
+    const andere = D.meetings.filter(m => !mitIds.has(m.id) && (m.kontaktIds || []).includes(k.id))
+                             .map(m => m.id);
+    D.papierkorb.push({
+      id: k.id, name: nameVon(k) || '(ohne Name)', firma: k.firma || '',
+      geloeschtAm: heute(), zeit: stempel,
+      kontakt: JSON.parse(JSON.stringify(k)),
+      meetings: alleinige.filter(m => (m.kontaktIds || []).includes(k.id))
+                         .map(m => JSON.parse(JSON.stringify(m))),
+      ausMeetings: andere
+    });
+    if (auswahl.delete(k.id)) { /* Markierung faellt weg */ }
+    if (sel.kontakte === k.id) sel.kontakte = null;
+  });
+
+  D.kontakte = D.kontakte.filter(k => !ids.has(k.id));
+  D.meetings = D.meetings.filter(m => !mitIds.has(m.id));
+  D.meetings.forEach(m => { m.kontaktIds = (m.kontaktIds || []).filter(x => !ids.has(x)); });
+  auswahlMerken();
+  persist(); render();
+  toast(arr.length + ' in den Papierkorb gelegt');
+}
+
+function papierkorbZeigen(){
+  if (document.getElementById('pkDialog')) return papierkorbZu();
+  const p = (D.papierkorb || []).slice().reverse();
+  const d = document.createElement('div');
+  d.className = 'modal'; d.id = 'pkDialog';
+  d.innerHTML = `<div class="modalbox breit">
+    <h3>Papierkorb</h3>
+    ${p.length ? `<p class="hint">${p.length} Eintrag(e). Zurückholen geht, solange
+      die Nummer nicht neu vergeben wurde.</p>
+    <div class="zfliste">${p.map(e => `<div class="zfzeile">
+      <div class="zfgrund">${esc(e.geloeschtAm || '')}${e.meetings && e.meetings.length
+        ? ' · ' + e.meetings.length + ' Protokoll(e)' : ''}</div>
+      <div><b>${esc(e.name)}</b> <i>${esc(e.id)}</i>${e.firma ? ' · ' + esc(e.firma) : ''}</div>
+      <div class="zfknoepfe" style="margin-top:6px">
+        <button class="btn small" onclick="papierkorbZurueck('${e.id}','${e.zeit}')">Zurückholen</button>
+        <button class="btn ghost small" onclick="papierkorbEndgueltig('${e.id}','${e.zeit}')">Endgültig löschen</button>
+      </div></div>`).join('')}</div>
+    <div class="knoepfe" style="margin-top:12px">
+      <button class="btn ghost" onclick="papierkorbLeeren()">Papierkorb leeren</button>
+      <button class="btn ghost" onclick="papierkorbZu()">Schliessen</button>
+    </div>`
+    : `<p class="hint">Der Papierkorb ist leer.</p>
+    <div class="knoepfe" style="margin-top:12px">
+      <button class="btn ghost" onclick="papierkorbZu()">Schliessen</button></div>`}
+    </div>`;
+  document.body.appendChild(d);
+}
+
+function papierkorbZu(){ const d = document.getElementById('pkDialog'); if (d) d.remove(); }
+
+function papierkorbEintrag(id, zeit){
+  return (D.papierkorb || []).find(e => e.id === id && e.zeit === zeit);
+}
+
+function papierkorbZurueck(id, zeit){
+  const e = papierkorbEintrag(id, zeit);
+  if (!e) return toast('Eintrag nicht mehr da');
+  // Die Nummer war seit dem Loeschen frei und kann neu vergeben worden sein.
+  if (D.kontakte.some(k => k.id === e.id))
+    return toast('Nummer ' + e.id + ' ist inzwischen neu vergeben, zurückholen geht nicht mehr');
+
+  const k = JSON.parse(JSON.stringify(e.kontakt));
+  k.verlauf = k.verlauf || [];
+  k.verlauf.push({datum: heute(), art: 'papierkorb',
+                  text: 'Aus dem Papierkorb zurückgeholt, gelöscht am ' + (e.geloeschtAm || '')});
+  D.kontakte.push(k);
+
+  (e.meetings || []).forEach(m => {
+    if (!D.meetings.some(x => x.id === m.id)) D.meetings.push(JSON.parse(JSON.stringify(m)));
+  });
+  (e.ausMeetings || []).forEach(mid => {
+    const m = D.meetings.find(x => x.id === mid);
+    if (m && !(m.kontaktIds || []).includes(k.id)) m.kontaktIds = [...(m.kontaktIds || []), k.id];
+  });
+
+  D.papierkorb = D.papierkorb.filter(x => x !== e);
+  persist(); render();
+  papierkorbZu(); papierkorbZeigen();
+  toast(nameVon(k) + ' ist zurück');
+}
+
+function papierkorbEndgueltig(id, zeit){
+  const e = papierkorbEintrag(id, zeit);
+  if (!e) return;
+  if (!confirm(e.name + ' endgültig löschen? Das lässt sich nicht rückgängig machen.')) return;
+  D.papierkorb = D.papierkorb.filter(x => x !== e);
+  persist();
+  papierkorbZu(); papierkorbZeigen();
+  toast('Endgültig gelöscht');
+}
+
+function papierkorbLeeren(){
+  const n = (D.papierkorb || []).length;
+  if (!n) return;
+  if (!confirm('Papierkorb mit ' + n + ' Eintrag(en) endgültig leeren? Das lässt sich nicht rückgängig machen.')) return;
+  D.papierkorb = [];
+  persist();
+  papierkorbZu(); papierkorbZeigen();
+  toast('Papierkorb geleert');
 }
 
 // ----------------------------------------------------------------- Marke im Seitenkopf
