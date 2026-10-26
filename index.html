@@ -959,6 +959,7 @@ function migrate(d){
   d.dublettenIgnoriert ||= [];
   d.papierkorb ||= [];
   d.firmen.forEach(f => { f.kommentar ||= ''; f.logo ||= ''; f.standorte ||= [];
+    f.mail ||= ''; f.tel ||= ''; f.karten ||= [];
     f.standorte.forEach(s => { s.bez ||= ''; s.strasse ||= ''; s.plz ||= ''; s.ort ||= '';
       s.land ||= ''; s.maps ||= ''; }); });
   d.meetings.forEach(m => { m.aktionen ||= []; m.kontaktIds ||= []; m.firmaId ||= '';
@@ -1114,6 +1115,9 @@ const meetingsVonFirma = fid => D.meetings.filter(m => m.firmaId === fid ||
 const offeneAktionen = m => (m.aktionen||[]).filter(a => !a.erledigt).length;
 const bild = k => k.logo ? 'Logos/'+k.logo
   : ((k.karten && k.karten[0]) ? 'Kartenbilder/'+k.karten[0] : '');
+// Firmen duerfen dasselbe: erst das Logo, sonst die Firmenkarte.
+const bildFirma = f => f.logo ? 'Logos/'+f.logo
+  : ((f.karten && f.karten[0]) ? 'Kartenbilder/'+f.karten[0] : '');
 function set(obj, feld, wert){ obj[feld] = wert; persist(); }
 
 // ----------------------------------------------------------------- Rendern
@@ -1174,7 +1178,7 @@ function renderFilters(){
     $('#fg').onchange = e => { filt.geprueft = e.target.value; renderList(); };
     $('#fsel').onchange = e => { filt.nurAuswahl = e.target.checked; renderList(); };
   } else if (tab === 'firmen'){
-    f.innerHTML = `<input type="search" id="fq" placeholder="Firma, Ort, Bereich" value="${esc(filt.q)}">
+    f.innerHTML = `<input type="search" id="fq" placeholder="Firma, Ort, Bereich, Mail" value="${esc(filt.q)}">
       <label class="hint"><input type="checkbox" id="fab" ${filt.abgleich?'checked':''}>
         nur mit offenem Abgleich</label>
       <button class="btn green small" onclick="neueFirma()">+ Firma</button>`;
@@ -1263,7 +1267,7 @@ function renderList(){
         <div class="rgt">${esc(k.bereich||'')}${k.quelle?`<br>${esc(k.quelle)}`:''}${n?`<br>${n} Protokoll${n>1?'e':''}`:''}</div></div>`;
     }).join('') : '<div class="empty">Keine Treffer</div>';
   } else if (tab === 'firmen'){
-    const arr = D.firmen.filter(f => passt([f.name,f.ort,f.land,f.bereich,f.kommentar].join(' ')))
+    const arr = D.firmen.filter(f => passt([f.name,f.ort,f.land,f.bereich,f.kommentar,f.mail].join(' ')))
       .filter(f => !filt.abgleich ||
         D.kontakte.some(k => k.firmaId===f.id && abgleichOffen(k)))
       .sort((a,b)=>a.name.localeCompare(b.name,'de'));
@@ -1272,7 +1276,7 @@ function renderList(){
       const p = pk.length;
       const luecken = pk.reduce((n,k)=>n+abgleichOffen(k),0);
       return `<div class="row ${sel.firmen===f.id?'on':''}" onclick="waehle('${f.id}')">
-        ${f.logo?`<img src="Logos/${esc(f.logo)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`:'<img alt="" style="visibility:hidden">'}
+        ${bildFirma(f)?`<img src="${esc(bildFirma(f))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`:'<img alt="" style="visibility:hidden">'}
         <div><div class="nm">${esc(f.name)}</div>
         <div class="sub">${esc([f.ort,f.land].filter(Boolean).join(' · '))}</div></div>
         <div class="rgt">${p} Person${p!==1?'en':''}<br>${meetingsVonFirma(f.id).length} Protokolle
@@ -1931,6 +1935,8 @@ function linksKontakt(k){
 
 function linksFirma(fa){
   const links = [];
+  if (fa.mail) links.push(`<a href="mailto:${esc(fa.mail)}">Mail</a>`);
+  if (fa.tel) links.push(`<a href="tel:${esc(fa.tel.replace(/[^\d+]/g,''))}">Telefon</a>`);
   if (fa.web) links.push(`<a class="ghost" target="_blank" href="${esc(fa.web.startsWith('http')?fa.web:'https://'+fa.web)}">Website</a>`);
   if (fa.linkedin) links.push(`<a class="li" target="_blank" href="${esc(fa.linkedin)}">LinkedIn</a>`);
   if (fa.maps) links.push(`<a class="map" target="_blank" href="${esc(fa.maps)}">Google Maps</a>`);
@@ -2453,6 +2459,8 @@ function detailFirma(fa){
     </div>
     <div class="links" id="dLinks">${linksFirma(fa)}</div>
     <div id="dFirma">${abgleichBoxFirma(fa)}</div>
+    ${(fa.karten||[]).length?`<div class="cardimgs">${fa.karten.map(c=>
+      `<a href="Kartenbilder/${esc(c)}" target="_blank"><img src="Kartenbilder/${esc(c)}" alt=""></a>`).join('')}</div>`:''}
     <fieldset><legend>Stammdaten</legend><div class="grid2">
       ${f('Firma','firma',fa.id,'name',fa.name)}
       ${f('Zusatz','firma',fa.id,'zusatz',fa.zusatz)}
@@ -2460,6 +2468,8 @@ function detailFirma(fa){
       ${f('PLZ','firma',fa.id,'plz',fa.plz)}
       ${f('Ort','firma',fa.id,'ort',fa.ort)}
       ${f('Land','firma',fa.id,'land',fa.land)}
+      ${f('Mail (allgemein)','firma',fa.id,'mail',fa.mail)}
+      ${f('Telefon (Zentrale)','firma',fa.id,'tel',fa.tel)}
       ${f('Website','firma',fa.id,'web',fa.web)}
       ${aw('Geschäftsbereich','firma',fa.id,'bereich',fa.bereich,'bereiche')}
       ${f('LinkedIn','firma',fa.id,'linkedin',fa.linkedin)}
@@ -2651,7 +2661,8 @@ function neuerKontakt(){
 }
 function neueFirma(){
   const fa = {id:neueId('F',D.firmen), name:'Neue Firma', zusatz:'', strasse:'', plz:'', ort:'',
-    land:'', web:'', bereich:'', kommentar:'', linkedin:'', maps:'', logo:'', standorte:[]};
+    land:'', web:'', bereich:'', kommentar:'', linkedin:'', maps:'', logo:'', standorte:[],
+    mail:'', tel:'', karten:[]};
   ableiten('firma', fa); D.firmen.push(fa); persist(); tab='firmen'; sel.firmen=fa.id; render();
 }
 function neuesMeeting(art, id){
