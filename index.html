@@ -356,6 +356,7 @@
         <button class="btn ghost breit" onclick="auswahlLeeren()">Auswahl leeren</button>
         <div class="trenn"></div>
         <button class="btn breit" id="btnCsv" onclick="csvKnopf()">Als CSV exportieren</button>
+        <button class="btn breit" id="btnMailliste" onclick="maillisteKnopf()" title="Excel für den Seriendruck in Word">Als Mailliste (Excel)</button>
         <button class="btn green breit" onclick="dokumentDialog()">Dokument erstellen</button>
         <div class="trenn"></div>
         <button class="btn breit" onclick="auftragDialog()"
@@ -928,6 +929,7 @@ function auswahlZeile(){
     b.title = auswahl.size ? auswahl.size + ' markierte Kontakte exportieren'
                            : 'Ohne Markierung werden alle Kontakte exportiert';
   }
+  if (typeof maillisteZeile === 'function') maillisteZeile();
 }
 // Ein einziger CSV-Knopf: mit Markierung die Auswahl, sonst alle
 function csvKnopf(){
@@ -3265,6 +3267,236 @@ function papierkorbLeeren(){
   persist();
   papierkorbZu(); papierkorbZeigen();
   toast('Papierkorb geleert');
+}
+
+// ============================================== Mailliste für den Seriendruck
+// Baut die Excel-Datei, die Word für den Seriendruck liest, direkt in der App.
+// Ein Blatt "Tabelle1", die Spalten Email, Vorname, Nachname, Firma, daneben in
+// Spalte F die Anleitung. Ohne Fremdbibliothek: eine xlsx ist ein ZIP mit ein
+// paar XML-Teilen, beides steht hier unten.
+//
+// Mitgenommen wird, was markiert ist, sonst der ganze Bestand. Kontakte ohne
+// Mailadresse fallen weg, die Liste soll versandfertig sein.
+
+const MD_ANLEITUNG = [
+  [2,  'Achtung:'],
+  [3,  'Öffne Microsoft Word'],
+  [4,  'Gehe auf Sendungen (Mailings)'],
+  [5,  'Klick auf Seriendruck starten'],
+  [6,  'Wähle E-Mail-Nachrichten'],
+  [7,  'Klick auf Empfänger auswählen'],
+  [8,  '→ Vorhandene Liste verwenden'],
+  [9,  'Wähle deine Excel-Datei'],
+  [10, 'Tabellenblatt auswählen (meist „Tabelle1“)'],
+  [11, 'Klick auf Fertig stellen und zusammenführen'],
+  [12, '→ E-Mail-Nachrichten senden'],
+  [14, 'Immer altes Outlook verwenden'],
+  [15, 'Nach Eingabe der Emailadressen immer wieder neu verbinden.'],
+  [17, '20 Jahre esp-engineering! Wir freuen uns auf deinen Besuch!']
+];
+const MD_BREITEN = [38, 18, 22, 30, 3, 52];
+
+// ------------------------------------------------------------------ ZIP-Teil
+// Nur gespeichert, nicht gepackt. Eine xlsx dieser Groesse ist ein paar hundert
+// Kilobyte, das Packen waere Aufwand ohne Nutzen.
+const MD_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++){
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function mdCrc32(bytes){
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = MD_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function mdZip(dateien){
+  const enc = new TextEncoder();
+  const teile = [], zentral = [];
+  let versatz = 0;
+
+  const kopf = (laenge) => { const b = new Uint8Array(laenge); return {b, d: new DataView(b.buffer)}; };
+
+  dateien.forEach(([name, text]) => {
+    const nb = enc.encode(name), inhalt = enc.encode(text), crc = mdCrc32(inhalt);
+    const {b: lfh, d} = kopf(30);
+    d.setUint32(0, 0x04034b50, true);
+    d.setUint16(4, 20, true);        // benoetigte Fassung
+    d.setUint16(6, 0x0800, true);    // Dateiname in UTF-8
+    d.setUint16(8, 0, true);         // nicht gepackt
+    d.setUint16(10, 0, true); d.setUint16(12, 0x2821, true);  // feste Uhrzeit, festes Datum
+    d.setUint32(14, crc, true);
+    d.setUint32(18, inhalt.length, true);
+    d.setUint32(22, inhalt.length, true);
+    d.setUint16(26, nb.length, true);
+    d.setUint16(28, 0, true);
+    teile.push(lfh, nb, inhalt);
+
+    const {b: cdh, d: c} = kopf(46);
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true); c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+    c.setUint16(12, 0, true); c.setUint16(14, 0x2821, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, inhalt.length, true);
+    c.setUint32(24, inhalt.length, true);
+    c.setUint16(28, nb.length, true);
+    c.setUint32(42, versatz, true);
+    zentral.push(cdh, nb);
+    versatz += 30 + nb.length + inhalt.length;
+  });
+
+  const zLaenge = zentral.reduce((n, x) => n + x.length, 0);
+  const {b: ende, d: e} = kopf(22);
+  e.setUint32(0, 0x06054b50, true);
+  e.setUint16(8, dateien.length, true);
+  e.setUint16(10, dateien.length, true);
+  e.setUint32(12, zLaenge, true);
+  e.setUint32(16, versatz, true);
+  return new Blob([...teile, ...zentral, ende], {type:
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+
+// ----------------------------------------------------------------- XML-Teile
+const mdX = s => (s == null ? '' : String(s))
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function mdZelle(bezug, text, fett){
+  if (text === '') return '';
+  return `<c r="${bezug}" t="inlineStr"${fett ? ' s="1"' : ''}>`
+       + `<is><t xml:space="preserve">${mdX(text)}</t></is></c>`;
+}
+
+function mdBlatt(zeilen){
+  const anl = new Map(MD_ANLEITUNG);
+  const letzte = Math.max(zeilen.length + 1, 17);
+  const cols = MD_BREITEN.map((w, i) =>
+    `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('');
+
+  const r = [];
+  r.push('<row r="1">' + ['Email', 'Vorname', 'Nachname', 'Firma']
+    .map((t, i) => mdZelle('ABCD'[i] + '1', t, true)).join('') + '</row>');
+  for (let i = 0; i < letzte - 1; i++){
+    const nr = i + 2;
+    const z = zeilen[i] || null;
+    const teile = z ? z.map((t, s) => mdZelle('ABCD'[s] + nr, t, false)).join('') : '';
+    const hin = anl.has(nr) ? mdZelle('F' + nr, anl.get(nr), nr === 2) : '';
+    if (teile || hin) r.push(`<row r="${nr}">${teile}${hin}</row>`);
+  }
+
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + `<dimension ref="A1:F${letzte}"/>`
+    + '<sheetViews><sheetView tabSelected="1" workbookViewId="0">'
+    + '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+    + '</sheetView></sheetViews>'
+    + '<sheetFormatPr defaultRowHeight="15"/>'
+    + `<cols>${cols}</cols>`
+    + `<sheetData>${r.join('')}</sheetData>`
+    + `<autoFilter ref="A1:D${zeilen.length + 1}"/>`
+    + '</worksheet>';
+}
+
+const MD_TYPEN = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+  + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+  + '<Default Extension="xml" ContentType="application/xml"/>'
+  + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+  + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+  + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+  + '</Types>';
+
+const MD_RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+  + '</Relationships>';
+
+const MD_MAPPE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+  + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+  + '<sheets><sheet name="Tabelle1" sheetId="1" r:id="rId1"/></sheets></workbook>';
+
+const MD_MAPPE_RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+  + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+  + '</Relationships>';
+
+const MD_STILE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+  + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
+  + '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+  + '<fills count="2"><fill><patternFill patternType="none"/></fill>'
+  + '<fill><patternFill patternType="gray125"/></fill></fills>'
+  + '<borders count="1"><border/></borders>'
+  + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+  + '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+  + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>'
+  + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+  + '</styleSheet>';
+
+// ----------------------------------------------------------------- Zeilenwerk
+function maillisteZeilen(liste){
+  const quelle = (liste && liste.length) ? liste : D.kontakte;
+  const gesehen = new Set();
+  const zeilen = [];
+  quelle.forEach(k => {
+    const mail = (k.mail || '').trim();
+    if (!mail) return;
+    const schl = mail.toLowerCase();
+    if (gesehen.has(schl)) return;   // dieselbe Adresse nie zweimal anschreiben
+    gesehen.add(schl);
+    const fa = D.firmen.find(f => f.id === k.firmaId);
+    zeilen.push([mail, (k.vorname || '').trim(), (k.nachname || '').trim(),
+                 (k.firma || (fa ? fa.name : '') || '').trim()]);
+  });
+  zeilen.sort((a, b) => (a[2] || '').localeCompare(b[2] || '', 'de')
+                     || (a[1] || '').localeCompare(b[1] || '', 'de')
+                     || a[0].localeCompare(b[0], 'de'));
+  return zeilen;
+}
+
+function maillisteBauen(liste){
+  const zeilen = maillisteZeilen(liste);
+  const blob = mdZip([
+    ['[Content_Types].xml', MD_TYPEN],
+    ['_rels/.rels', MD_RELS],
+    ['xl/workbook.xml', MD_MAPPE],
+    ['xl/_rels/workbook.xml.rels', MD_MAPPE_RELS],
+    ['xl/styles.xml', MD_STILE],
+    ['xl/worksheets/sheet1.xml', mdBlatt(zeilen)]
+  ]);
+  return {blob: blob, anzahl: zeilen.length};
+}
+
+function maillisteKnopf(){
+  const arr = auswahlKontakte();
+  const ohne = (arr.length ? arr : D.kontakte).filter(k => !(k.mail || '').trim()).length;
+  const {blob, anzahl} = maillisteBauen(arr);
+  if (!anzahl) return toast('Niemand mit Mailadresse dabei');
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'esp-Kontakte_Liste_' + heute().replace(/-/g, '') + '.xlsx';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+
+  toast(anzahl + ' Adressen in der Liste' + (ohne ? ', ' + ohne + ' ohne Mail weggelassen' : ''));
+}
+
+function maillisteZeile(){
+  const b = document.getElementById('btnMailliste');
+  if (!b) return;
+  b.textContent = auswahl.size ? 'Auswahl als Mailliste' : 'Alle als Mailliste';
+  b.title = auswahl.size
+    ? auswahl.size + ' markierte Kontakte, ohne die ohne Mailadresse'
+    : 'Ohne Markierung kommen alle Kontakte mit Mailadresse in die Liste';
 }
 
 // ----------------------------------------------------------------- Marke im Seitenkopf
