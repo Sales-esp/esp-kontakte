@@ -981,6 +981,12 @@ function migrate(d){
     k.abgleichIgnoriert ||= false; k.fotos ||= []; k.verlauf ||= []; });
   d.dublettenIgnoriert ||= [];
   d.papierkorb ||= [];
+  // Laendernamen immer auf Deutsch, siehe landDeutsch()
+  if (typeof landDeutsch === 'function'){
+    d.kontakte.forEach(k => { k.land = landDeutsch(k.land); });
+    d.firmen.forEach(f => { f.land = landDeutsch(f.land);
+      (f.standorte || []).forEach(s => { s.land = landDeutsch(s.land); }); });
+  }
   d.firmen.forEach(f => { f.kommentar ||= ''; f.logo ||= ''; f.standorte ||= [];
     f.mail ||= ''; f.tel ||= ''; f.karten ||= [];
     f.standorte.forEach(s => { s.bez ||= ''; s.strasse ||= ''; s.plz ||= ''; s.ort ||= '';
@@ -1783,6 +1789,15 @@ function upd(art, id, feld, wert){
           : art==='firma'   ? D.firmen.find(f=>f.id===id)
           :                   D.meetings.find(m=>m.id===id);
   if (!o) return;
+  if (feld === 'land' && typeof landDeutsch === 'function'){
+    const deu = landDeutsch(wert);
+    if (deu !== wert){
+      wert = deu;
+      const e = document.querySelector('#detail [data-f="land"]');
+      if (e) e.value = deu;
+      toast('Land auf "' + deu + '" vereinheitlicht');
+    }
+  }
   // Vorher merken, damit der Verlauf sagen kann, von was auf was.
   const vorher = o[feld];
   o[feld] = wert;
@@ -1919,6 +1934,7 @@ function wahl(art, id, feld, liste, el){
 function datalists(){
   return `<datalist id="dlQuellen">${D.quellen.map(q=>`<option value="${esc(q)}">`).join('')}</datalist>
   <datalist id="dlBereiche">${D.bereiche.map(b=>`<option value="${esc(b)}">`).join('')}</datalist>
+  <datalist id="dlLaender">${laenderVorschlag([...D.kontakte, ...D.firmen]).map(l=>`<option value="${esc(l)}">`).join('')}</datalist>
   <datalist id="dlArten">${D.meetingarten.map(a=>`<option value="${esc(a)}">`).join('')}</datalist>
   <datalist id="dlKontakte">${D.kontakte.map(k=>`<option value="${esc(nameVon(k))} [${k.id}]">`).join('')}</datalist>`;
 }
@@ -2382,7 +2398,7 @@ function detailKontakt(k){
       ${f('Strasse','kontakt',k.id,'strasse',k.strasse)}
       ${f('PLZ','kontakt',k.id,'plz',k.plz)}
       ${f('Ort','kontakt',k.id,'ort',k.ort)}
-      ${f('Land','kontakt',k.id,'land',k.land)}
+      ${f('Land','kontakt',k.id,'land',k.land,'','dlLaender')}
       ${f('Telefon','kontakt',k.id,'tel',k.tel)}
       ${f('Mobil','kontakt',k.id,'mobil',k.mobil)}
       ${f('Fax','kontakt',k.id,'fax',k.fax)}
@@ -2483,7 +2499,7 @@ function detailFirma(fa){
       ${f('Strasse','firma',fa.id,'strasse',fa.strasse)}
       ${f('PLZ','firma',fa.id,'plz',fa.plz)}
       ${f('Ort','firma',fa.id,'ort',fa.ort)}
-      ${f('Land','firma',fa.id,'land',fa.land)}
+      ${f('Land','firma',fa.id,'land',fa.land,'','dlLaender')}
       ${f('Mail (allgemein)','firma',fa.id,'mail',fa.mail)}
       ${f('Telefon (Zentrale)','firma',fa.id,'tel',fa.tel)}
       ${f('Website','firma',fa.id,'web',fa.web)}
@@ -3656,6 +3672,57 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') mfZu(); });
 
 function mfZuruecksetzen(){
   Object.keys(MF).forEach(s => { filt[s] = []; });
+}
+
+// ======================================================= Länder auf Deutsch
+// Patricks Vorgabe vom 27.10.2026: immer die deutsche Fassung. Im Bestand
+// standen Schweiz und Switzerland, Deutschland und Germany nebeneinander.
+//
+// Angewandt wird das an zwei Stellen: beim Laden einer Datei und bei jeder
+// Eingabe. Der Bestand kann also gar nicht mehr auseinanderlaufen, egal ob
+// ein Wert von Hand, aus einer Visitenkarte oder aus Outlook kommt.
+//
+// Schlüssel immer klein geschrieben, verglichen wird die Kleinform.
+const LAND_DE = {
+  'switzerland':'Schweiz', 'suisse':'Schweiz', 'svizzera':'Schweiz', 'ch':'Schweiz',
+  'germany':'Deutschland', 'bundesrepublik deutschland':'Deutschland',
+  'allemagne':'Deutschland', 'de':'Deutschland',
+  'austria':'Österreich', 'autriche':'Österreich', 'at':'Österreich',
+  'sweden':'Schweden', 'canada':'Kanada',
+  'vereinigte staaten':'USA', 'united states':'USA',
+  'united states of america':'USA', 'u.s.a':'USA', 'us':'USA', 'usa':'USA',
+  'france':'Frankreich', 'italy':'Italien', 'italia':'Italien',
+  'netherlands':'Niederlande', 'the netherlands':'Niederlande', 'holland':'Niederlande',
+  'spain':'Spanien', 'espana':'Spanien', 'españa':'Spanien',
+  'united kingdom':'Grossbritannien', 'great britain':'Grossbritannien',
+  'uk':'Grossbritannien',
+  'denmark':'Dänemark', 'norway':'Norwegen', 'finland':'Finnland',
+  'poland':'Polen', 'czech republic':'Tschechien', 'czechia':'Tschechien',
+  'hungary':'Ungarn', 'belgium':'Belgien', 'ireland':'Irland',
+  'japan':'Japan', 'china':'China', 'india':'Indien',
+  'south korea':'Südkorea', 'republic of korea':'Südkorea', 'korea':'Südkorea',
+  'taiwan':'Taiwan', 'singapore':'Singapur', 'israel':'Israel',
+  'turkey':'Türkei', 'türkiye':'Türkei', 'saudi arabia':'Saudi-Arabien',
+  'thailand':'Thailand', 'malaysia':'Malaysia', 'tunisia':'Tunesien',
+  'lithuania':'Litauen', 'liechtenstein':'Liechtenstein',
+  'slovakia':'Slowakei', 'slovenia':'Slowenien', 'romania':'Rumänien',
+  'russia':'Russland', 'brazil':'Brasilien', 'mexico':'Mexiko',
+  'australia':'Australien', 'new zealand':'Neuseeland', 'greece':'Griechenland',
+  'portugal':'Portugal', 'luxembourg':'Luxemburg', 'vietnam':'Vietnam'
+};
+
+function landDeutsch(w){
+  const s = (w || '').trim();
+  if (!s) return s;
+  return LAND_DE[s.toLowerCase().replace(/\.+$/, '')] || s;
+}
+
+// Vorschlagsliste beim Tippen: was im Bestand steht, dazu die Ziele der Tabelle.
+function laenderVorschlag(alle){
+  const m = new Set();
+  (alle || []).forEach(o => { const l = (o.land || '').trim(); if (l) m.add(l); });
+  Object.values(LAND_DE).forEach(l => m.add(l));
+  return [...m].sort((a, b) => a.localeCompare(b, 'de'));
 }
 
 // ----------------------------------------------------------------- Marke im Seitenkopf
