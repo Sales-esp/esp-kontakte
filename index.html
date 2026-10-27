@@ -181,6 +181,27 @@
   .zfwert.an{border-color:var(--accent);background:var(--accent-light);font-weight:600}
   .zfwert.klein{display:inline-block;width:auto;margin-top:4px;font-size:12px;padding:3px 7px}
   .zfwert i{color:var(--muted);font-size:12px;font-style:italic}
+  .mf{position:relative}
+  .mf .mfknopf{width:100%;display:flex;align-items:center;gap:6px;padding:6px 8px;
+       border:1px solid var(--line);border-radius:5px;background:#fff;font:inherit;
+       font-size:13px;cursor:pointer;text-align:left}
+  .mf .mftext{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mf .mfpfeil{margin-left:auto;color:var(--muted);font-size:10px}
+  .mf.auf .mfknopf{border-color:var(--accent);border-radius:5px 5px 0 0}
+  .mfzahl{background:var(--accent);color:#fff;border-radius:20px;font-size:11px;
+       padding:0 6px;line-height:16px;flex:none}
+  .mfliste{border:1px solid var(--accent);border-top:0;border-radius:0 0 5px 5px;
+       background:#fff;max-height:236px;overflow:auto;padding:0 0 3px}
+  .mfliste label{display:flex;gap:7px;align-items:center;padding:3px 8px;
+       font-size:12.5px;cursor:pointer}
+  .mfliste label:hover{background:var(--chip)}
+  .mfliste label input{width:15px;height:15px;flex:none;margin:0;accent-color:var(--accent)}
+  .mfliste label .n{margin-left:auto;color:var(--muted);font-size:11px;flex:none}
+  .mfkopf{display:flex;gap:6px;padding:5px 8px;border-bottom:1px solid var(--line);
+       margin-bottom:3px;position:sticky;top:0;background:#fff}
+  .mfkopf button{font:inherit;font-size:11.5px;padding:2px 8px;border:1px solid var(--line);
+       border-radius:4px;background:#fff;cursor:pointer;color:var(--muted)}
+  .mfkopf button:hover{border-color:var(--accent);color:var(--accent)}
   .vltab{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
   .vltab td{padding:3px 8px 3px 0;vertical-align:top;border-bottom:1px solid var(--line)}
   .vltab tr:last-child td{border-bottom:0}
@@ -898,7 +919,7 @@ function swBilderWeg(){
 const LS = 'esp_kontakte_v1';
 let D = null, fileHandle = null, tab = 'kontakte', dirty = false;
 const sel = {kontakte:null, firmen:null, meetings:null, listen:'quellen'};
-const filt = {q:'', bereich:'', quelle:'', land:'', geprueft:'', abgleich:false,
+const filt = {q:'', bereiche:[], quellen:[], laender:[], geprueft:'', abgleich:false,
               offen:false, ohneZuordnung:false, nurAuswahl:false};
 // Markierte Kontakte fuer Export und Dokument, ueberlebt das Neuladen
 const LS_AUSWAHL = 'esp_kontakte_auswahl';
@@ -1152,17 +1173,13 @@ function setTab(k){ tab = k; render(); }
 function renderFilters(){
   const f = $('#filters');
   massenZu();
+  if (typeof mfZu === 'function') mfZu();
   if (tab === 'kontakte'){
-    const laender = [...new Set(D.kontakte.map(k=>k.land).filter(Boolean))].sort();
     f.innerHTML = `
       <input type="search" id="fq" placeholder="Suchen: Name, Firma, Ort, Mail" value="${esc(filt.q)}">
-      <select id="fb"><option value="">Alle Bereiche</option>${D.bereiche.map(b=>
-        `<option ${filt.bereich===b?'selected':''}>${esc(b)}</option>`).join('')}</select>
-      <select id="fqu"><option value="">Alle Quellen</option><option value="__leer"
-        ${filt.quelle==='__leer'?'selected':''}>ohne Quelle</option>${D.quellen.map(q=>
-        `<option ${filt.quelle===q?'selected':''}>${esc(q)}</option>`).join('')}</select>
-      <select id="fl"><option value="">Alle Länder</option>${laender.map(l=>
-        `<option ${filt.land===l?'selected':''}>${esc(l)}</option>`).join('')}</select>
+      ${mfBox('bereiche')}
+      ${mfBox('quellen')}
+      ${mfBox('laender')}
       <select id="fg"><option value="">Geprüft und offen</option>
         <option value="nein" ${filt.geprueft==='nein'?'selected':''}>nur ungeprüfte</option>
         <option value="ja" ${filt.geprueft==='ja'?'selected':''}>nur geprüfte</option></select>
@@ -1174,9 +1191,6 @@ function renderFilters(){
       <button class="btn ghost small" onclick="markierteLoeschen()">Markierte löschen …</button>
       <button class="btn ghost small" onclick="papierkorbZeigen()">Papierkorb …</button>`;
     $('#fq').oninput = e => { filt.q = e.target.value; renderList(); };
-    $('#fb').onchange = e => { filt.bereich = e.target.value; renderList(); };
-    $('#fqu').onchange = e => { filt.quelle = e.target.value; renderList(); };
-    $('#fl').onchange = e => { filt.land = e.target.value; renderList(); };
     $('#fg').onchange = e => { filt.geprueft = e.target.value; renderList(); };
     $('#fsel').onchange = e => { filt.nurAuswahl = e.target.checked; renderList(); };
   } else if (tab === 'firmen'){
@@ -1241,9 +1255,9 @@ function sichtbareKontakte(){
                k.details, k.quelle, k.tel, k.mobil, k.strasse, k.plz, k.land,
                k.linkedin, k.web, k.id].join(' ');
     if (!passt(t)) return false;
-    if (filt.bereich && k.bereich !== filt.bereich) return false;
-    if (filt.quelle === '__leer' ? k.quelle : filt.quelle && k.quelle !== filt.quelle) return false;
-    if (filt.land && k.land !== filt.land) return false;
+    if (!mfPasst(filt.bereiche, k.bereich)) return false;
+    if (!mfPasst(filt.quellen, k.quelle)) return false;
+    if (!mfPasst(filt.laender, k.land)) return false;
     if (filt.geprueft === 'ja' && !k.geprueft) return false;
     if (filt.geprueft === 'nein' && k.geprueft) return false;
     if (filt.nurAuswahl && !auswahl.has(k.id)) return false;
@@ -3497,6 +3511,151 @@ function maillisteZeile(){
   b.title = auswahl.size
     ? auswahl.size + ' markierte Kontakte, ohne die ohne Mailadresse'
     : 'Ohne Markierung kommen alle Kontakte mit Mailadresse in die Liste';
+}
+
+// ============================================ Mehrfachauswahl in den Filtern
+// Bereich, Quelle und Land lassen jetzt mehrere Werte zu. Innerhalb eines
+// Filters gilt oder, zwischen den Filtern und: Bereich Optik ODER Laser, UND
+// Land Schweiz ODER Österreich.
+//
+// Darstellung: ein Knopf, der aufklappt, darunter die Werte mit Kästchen. Die
+// Zahl rechts sagt, wie viele Kontakte dieser Wert brächte, wenn die übrigen
+// Filter so bleiben wie sie sind. Darum steht hinter einem Wert auch mal 0.
+
+const MF = {
+  bereiche: {titel: 'Bereiche', leer: 'ohne Bereich', feld: 'bereich',
+             werte: () => D.bereiche.slice()},
+  quellen:  {titel: 'Quellen',  leer: 'ohne Quelle',  feld: 'quelle',
+             werte: () => D.quellen.slice()},
+  // Länder nach Häufigkeit im ganzen Bestand, nicht alphabetisch: sonst steht
+  // Schweiz hinter Saudi-Arabien. Die Reihenfolge haengt bewusst NICHT am
+  // Filter, sie darf nicht unter dem Finger springen.
+  laender:  {titel: 'Länder',   leer: 'ohne Land',    feld: 'land',
+             werte: () => {
+               const n = new Map();
+               D.kontakte.forEach(k => { const l = (k.land || '').trim();
+                 if (l) n.set(l, (n.get(l) || 0) + 1); });
+               return [...n.keys()].sort((a, b) =>
+                 n.get(b) - n.get(a) || a.localeCompare(b, 'de'));
+             }}
+};
+const MF_LEER = '__leer';
+
+// Ein leeres Feld zaehlt als eigener Wert, sonst liesse sich nach "ohne" nicht filtern.
+const mfWert = w => ((w || '').trim() || MF_LEER);
+const mfPasst = (gewaehlt, wert) => !gewaehlt.length || gewaehlt.includes(mfWert(wert));
+
+function mfBeschriftung(schl){
+  const g = filt[schl] || [];
+  const m = MF[schl];
+  if (!g.length) return 'Alle ' + m.titel;
+  const erst = g[0] === MF_LEER ? m.leer : g[0];
+  return g.length === 1 ? erst : erst + ' +' + (g.length - 1);
+}
+
+// Wie viele Kontakte brächte dieser Wert? Die übrigen Filter gelten weiter,
+// dieser eine wird für die Zählung beiseitegelegt.
+function mfZahlen(schl){
+  const vorher = filt[schl];
+  filt[schl] = [];
+  const arr = sichtbareKontakte();
+  filt[schl] = vorher;
+  const z = new Map();
+  arr.forEach(k => { const w = mfWert(k[MF[schl].feld]); z.set(w, (z.get(w) || 0) + 1); });
+  return z;
+}
+
+function mfBox(schl){
+  const m = MF[schl];
+  const g = filt[schl] || [];
+  return `<div class="mf" id="mf_${schl}">
+    <button type="button" class="mfknopf" onclick="mfKlappen('${schl}')">
+      <span class="mftext">${esc(mfBeschriftung(schl))}</span>
+      ${g.length > 1 ? `<span class="mfzahl">${g.length}</span>` : ''}
+      <span class="mfpfeil">▾</span></button>
+  </div>`;
+}
+
+function mfListe(schl){
+  const m = MF[schl];
+  const g = filt[schl] || [];
+  const z = mfZahlen(schl);
+  const zeile = (wert, txt) => `<label><input type="checkbox" value="${esc(wert)}"
+      ${g.includes(wert) ? 'checked' : ''} onchange="mfHaken('${schl}', this)">
+    <span>${esc(txt)}</span><span class="n">${z.get(wert) || 0}</span></label>`;
+  return `<div class="mfliste">
+    <div class="mfkopf">
+      <button type="button" onclick="mfAlle('${schl}', true)">alle</button>
+      <button type="button" onclick="mfAlle('${schl}', false)">keine</button>
+    </div>
+    ${zeile(MF_LEER, m.leer)}
+    ${m.werte().map(w => zeile(w, w)).join('')}
+  </div>`;
+}
+
+function mfKlappen(schl){
+  const box = document.getElementById('mf_' + schl);
+  if (!box) return;
+  const offen = box.classList.contains('auf');
+  mfZu();
+  if (offen) return;                      // derselbe Knopf schliesst wieder
+  box.classList.add('auf');
+  box.insertAdjacentHTML('beforeend', mfListe(schl));
+}
+
+function mfZu(){
+  document.querySelectorAll('.mf.auf').forEach(b => {
+    b.classList.remove('auf');
+    const l = b.querySelector('.mfliste'); if (l) l.remove();
+  });
+}
+
+function mfHaken(schl, el){
+  const g = new Set(filt[schl] || []);
+  if (el.checked) g.add(el.value); else g.delete(el.value);
+  filt[schl] = [...g];
+  mfKnopfText(schl);
+  renderList();
+  mfZahlenNachziehen(schl);
+}
+
+function mfAlle(schl, an){
+  filt[schl] = an ? [MF_LEER, ...MF[schl].werte()] : [];
+  const box = document.getElementById('mf_' + schl);
+  if (box) box.querySelectorAll('.mfliste input').forEach(i => { i.checked = an; });
+  mfKnopfText(schl);
+  renderList();
+  mfZahlenNachziehen(schl);
+}
+
+function mfKnopfText(schl){
+  const box = document.getElementById('mf_' + schl);
+  if (!box) return;
+  const t = box.querySelector('.mftext');
+  if (t) t.textContent = mfBeschriftung(schl);
+  const alt = box.querySelector('.mfzahl');
+  const n = (filt[schl] || []).length;
+  if (n > 1){
+    if (alt) alt.textContent = n;
+    else box.querySelector('.mfpfeil').insertAdjacentHTML('beforebegin',
+      `<span class="mfzahl">${n}</span>`);
+  } else if (alt) alt.remove();
+}
+
+// Die Zahlen der ANDEREN Filter stimmen nach einer Änderung nicht mehr. Der
+// offene Filter behält seine, sonst springen die Zahlen unter dem Finger weg.
+function mfZahlenNachziehen(ausser){
+  Object.keys(MF).forEach(s => { if (s !== ausser) mfKnopfText(s); });
+}
+
+// Ausserhalb klicken schliesst die offene Liste.
+document.addEventListener('click', e => {
+  if (!e.target.closest('.mf')) mfZu();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') mfZu(); });
+
+function mfZuruecksetzen(){
+  Object.keys(MF).forEach(s => { filt[s] = []; });
 }
 
 // ----------------------------------------------------------------- Marke im Seitenkopf
